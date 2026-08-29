@@ -1,16 +1,14 @@
 # SP Group for Home Assistant
 
-Unofficial custom integration for Singapore Power e-accounts. It exposes billed electricity (kWh), water (m³), and gas when the account has billed periods, as Energy-dashboard sensors, plus account diagnostics.
-
-Auth and usage HTTP contracts come from SP Android app `sg.com.singaporepower.spservices` 15.10.0.
+Unofficial HACS integration for Singapore Power e-accounts. It polls the same Auth0 + Jarvis + Njord APIs as Android app `sg.com.singaporepower.spservices` 15.10.0 and exposes usage, bills, meter registers, and optional EV / GreenUP / Tengah sensors.
 
 ## Install
 
-### HACS (custom repository)
+### HACS
 
 1. HACS → Integrations → Custom repositories
-2. URL: `https://github.com/maci0/home-assistant-sp`, category Integration
-3. Download **SP Group**, then restart Home Assistant
+2. URL `https://github.com/maci0/home-assistant-sp`, category Integration
+3. Download **SP Group**, restart Home Assistant
 4. Settings → Devices & services → Add integration → **SP Group**
 5. Sign in with the same e-account email and password as the SP app
 
@@ -20,77 +18,103 @@ Copy `custom_components/sp_group` into `<config>/custom_components/sp_group` and
 
 ## Energy dashboard
 
-After the first successful poll, usage is imported as long-term statistics.
+Polls every 30 minutes. After the first successful poll, long-term statistics are written for electricity (and gas when present).
 
-- Grid consumption: `sensor.sp_group_utilities_electricity`
-- Do not add water in Energy. SP only bills water monthly, so there is no hourly or daily water series.
-- Gas: `sensor.sp_group_utilities_gas` when the charts payload has billed gas periods
+- Grid consumption: `sensor.sp_group_utilities_electricity` only. That series is AMI half-hours folded to clock hours when the premise has `ami_elec`, otherwise billed monthly kWh.
+- Do not add **Electricity last billed**, **Electricity meter**, or **Electricity this month** as grid sources. They are a different number: last billed period, the physical register, and Green Goals month-to-date.
+- Leave Water empty in Energy. SP bills water monthly. **Water** is the sum of billed months; **Water meter** is the lifetime register. Neither is an hourly series.
+- Gas: `sensor.sp_group_utilities_gas` only if Jarvis returned billed gas periods.
 
-When the premise has AMI electricity (`ami_elec`), the electricity sensor uses the same AMI series as the SP app: 30-minute slots for the last 31 days, plus daily points for about a year. The feed lags a few hours; empty slots after the last reported interval are dropped. Energy folds two slots into each clock hour because Home Assistant energy statistics are hourly. Water is billed monthly only. The water total and last-billed sensors stay as numbers; they are not imported as Energy hourly statistics.
-
-Last billed period sensors (`*_last_billed`) are the latest bill. Do not add those as Energy grid sources. `Electricity today` and `Electricity last 30 min` are AMI measurements. The 30-minute sensor is the last slot SP has published, not the clock hour.
+AMI electricity lags a few hours. Empty future 30-minute slots are dropped. **Electricity last 30 min** is the last published slot, not the clock hour.
 
 ## Entities
 
-| Entity | What it is |
-| --- | --- |
-| Electricity | Cumulative billed kWh (`total_increasing`) |
-| Water | Cumulative billed m³ (monthly bills, not an Energy hourly source) |
-| Gas | Cumulative billed usage, only if Jarvis returns gas periods |
-| Electricity / water / gas last billed | Latest billed period amount (`measurement`) |
-| Account | Account status, diagnostic. Attributes include address, account number, utilities, AMI flag, retailer, next meter-reading window |
-| Prepaid credit | PPMS balance in SGD, only when `/me` says a prepaid account exists |
-| Last bill | Latest utility bill in SGD from Njord history |
-| Amount due | Outstanding payable in SGD. Negative is a credit |
-| Electricity / water meter | Last actual register from SMRD (`total_increasing`) |
-| Electricity this month | Green Goals month-to-date kWh vs `goal_target` |
-| GreenUP points | 1UP account points and tier, if the GraphQL account exists |
-| EV wallet / session / last charge / unpaid | Eva + Tyche, only when the account has EV data |
-| Unread notifications | In-app unread count |
-| Bill delivery | e-bill vs paper, if Skalbox preferences exist |
-| FCU | Tengah paired fan coil: room temperature, on/off |
-| SP tariff | Public regulated kWh price, if the priceplan host returns it |
+Names below are the entity names. Unique id is `{premise_id}_{key}`. Optional rows are created only when that API returns data. Reload the integration after an upgrade if a new sensor is missing.
+
+### Usage
+
+| Name | Key | What it is |
+| --- | --- | --- |
+| Electricity | `electricity` | Cumulative kWh, `total_increasing`. AMI when `ami_elec`, else billed months |
+| Electricity last billed | `electricity_last_period` | Latest billed month kWh |
+| Electricity today | `electricity_today` | AMI kWh for today in SGT |
+| Electricity last 30 min | `electricity_last_hour` | Last published AMI slot |
+| Water | `water` | Sum of billed monthly m³. Not Energy hourly |
+| Water last billed | `water_last_period` | Latest billed month m³ |
+| Gas / Gas last billed | `gas`, `gas_last_period` | Only if Jarvis `gas.data` is non-empty |
+
+### Bill
+
+| Name | Key | What it is |
+| --- | --- | --- |
+| Last bill | `last_bill` | Latest Njord bill in SGD (cents / 100) |
+| Amount due | `amount_due` | Njord payable in SGD. Negative is a credit |
+| Prepaid credit | `ppms_credit` | PPMS SGD when `/me` says a prepaid account exists |
+
+### Meters and Green Goals
+
+| Name | Key | What it is |
+| --- | --- | --- |
+| Electricity meter | `electricity_meter` | Last actual SMRD register, kWh |
+| Water meter | `water_meter` | Last actual SMRD register, m³ |
+| Electricity this month | `electricity_goal` | Green Goals used kWh. Attributes: `goal_target`, `percent_difference`, `cost_difference_sgd` |
+| Water this month | `water_goal` | Same for water when used or target is non-zero |
+
+### Optional
+
+| Name | Key | Created when |
+| --- | --- | --- |
+| GreenUP points | `greenup_points` | 1UP GraphQL account node exists |
+| EV wallet | `ev_wallet` | Tyche points or dollars are non-zero |
+| EV session | `ev_session` | Eva latest session has status or kWh |
+| EV last charge | `ev_last_charge` | Eva receipts list is non-empty |
+| EV unpaid | `ev_unpaid` | Eva unpaid orders list is non-empty |
+| Unread notifications | `unread_notifications` | Notifications API returns a count |
+| Bill delivery | `bill_delivery` | Skalbox preferences exist (`e-bill` or `paper`) |
+| FCU | `fcu` | Frosty reports a paired Tengah fan coil |
+| SP tariff | `tariff` | Public priceplan host returns `sp_kwh_price` |
+| Account | `account` | Always. Status plus address, account number, AMI flag, retailer, next meter-reading window |
 
 Shared attributes on usage sensors: `premise_id`, `address`, `account_number`, `last_period`, `last_period_amount`, `period_count`, `average_consumption`, `comparison`.
 
-Reconfigure the entry from the integration page if the e-account password changes. Reauth starts automatically when the stored session is rejected.
+Reconfigure the entry if the password changes. Reauth starts when the stored session is rejected.
 
-## What it does
+## Poll
 
-Polls about once an hour:
+Required, in order:
 
-1. `POST https://identity.spdigital.sg/oauth/token` Auth0 password-realm (scopes include `me me:uportal me:eva me:rbac`)
-2. `GET https://b2c.api.spdigital.sg/jarvis/v3/me` for the premise and account
-3. `GET https://b2c.api.spdigital.sg/jarvis/v4/charts/{premise_id}` for `elec`, `water`, and `gas`
-4. `POST https://b2c.api.spdigital.sg/jarvis/v3/ami/charts` when `ami_elec` is true (`grouped_by` `day` for 30-minute slots, `month` for daily)
-5. `GET https://b2c.api.spdigital.sg/jarvis/v3/smrd-uportal/{premise_id}` for the next meter-reading window (ignored if it fails)
-6. `GET https://b2c.api.spdigital.sg/jarvis/v3/ppms/balance/{premise_id}` only if `ppms_details.exists` is true
-7. `GET https://b2c.api.spdigital.sg/njord/v4/payables` for the amount due (Njord stores dollars as integer cents)
-8. `GET https://b2c.api.spdigital.sg/njord/v3/history?account_numbers={account}` for the latest `type=bill` row. PDF download URLs are not stored.
-9. `GET https://b2c.api.spdigital.sg/jarvis/v5/greengoals/targets` for the current month's used vs target. Zero used and target rows are skipped.
-10. Optional reads that are skipped when the account has no data: GreenUP GraphQL, Tyche wallet, Eva session/history/unpaid, notifications unread count, Skalbox bill preferences, Frosty paired FCUs, public priceplan.
+1. `POST https://identity.spdigital.sg/oauth/token` Auth0 password-realm or refresh_token. Scopes include `me me:uportal me:eva me:rbac`
+2. `GET https://b2c.api.spdigital.sg/jarvis/v3/me`
+3. `GET https://b2c.api.spdigital.sg/jarvis/v4/charts/{premise_id}`
+4. `POST https://b2c.api.spdigital.sg/jarvis/v3/ami/charts` when `ami_elec` (`grouped_by` `day` then `month`)
+5. `GET https://b2c.api.spdigital.sg/jarvis/v3/smrd-uportal/{premise_id}`
+6. `GET https://b2c.api.spdigital.sg/jarvis/v3/ppms/balance/{premise_id}` only if prepaid exists
+7. `GET https://b2c.api.spdigital.sg/njord/v4/payables` (integer cents)
+8. `GET https://b2c.api.spdigital.sg/njord/v3/history?account_numbers={account}` latest `type=bill`. PDF URLs are not stored
+9. `GET https://b2c.api.spdigital.sg/jarvis/v5/greengoals/targets`
 
-The session refresh token is stored on the config entry so Home Assistant restarts do not password-login every time.
+Then optional reads. 4xx or empty payloads skip the matching sensor:
 
-Download diagnostics from the integration page if you need to file a bug. Tokens and the password are not included.
+- `POST /1up/authenticated/graphql` GreenUP account
+- `GET /tyche/v1/wallet-summary`
+- `GET /eva/v1/sessions/latest`, `/eva/v2/order/receipts`, `/eva/v1/order/unpaid`
+- `GET /notifications/v1/notifications` unread count only (bodies are not stored)
+- `GET /skalbox/b2c/account/v1/retrieveBillPreferences`
+- `POST /frosty/graphql` paired FCUs, then `/frosty/fcu_status`
+- `GET https://public.api.spdigital.sg/priceplan/v2/plans/price?consumption=350`
 
-## Use
+The refresh token is stored on the config entry so restarts do not password-login every time. Diagnostics omit the password and tokens.
 
-Add the cumulative electricity sensor as the Energy dashboard grid source. Leave Water empty in Energy. Use `Water last billed` for the last month's m³.
+## Not included
 
-## Known limitations
-
-AMI electricity is 30-minute slots for 31 days and daily points for about 13 months, matching the app's Today / month / year charts. Last bill and amount due are the same Njord dollar figures the app shows. Green Goals is month-to-date used vs a target, not the AMI today sensor. Optional EV, GreenUP, FCU, notifications, bill delivery, and tariff sensors appear only when those APIs return data. Bill pay mutations, meter-reading submission, start/stop charge, and Singpass login are not included. Town-gas sensors appear only when Jarvis returns billed `gas` periods. Prepaid credit is skipped when the account is not PPMS.
-
-## Remove
-
-Settings → Devices & services → SP Group → Delete. Then remove the folder from `custom_components` if you installed it manually, or delete the HACS download, and restart.
+Bill pay, GIRO setup, UniDollar pay, add card, start/stop EV charge, meter-reading submit, Singpass, GreenUP quests, FCU pairing.
 
 ## Troubleshooting
 
 - **invalid_claim / rejected session token:** the client must request the `me:*` scopes. Use this repo, not a stale copy.
-- **Suspicious request requires verification:** Auth0 bot detection after many password logins. Sign in once in the SP app, wait a few minutes, then reload or reauthenticate the integration.
-- **No Energy statistics:** wait for the first poll, hard-refresh the Energy settings page, then pick the cumulative sensors above, not the last-billed ones.
+- **Suspicious request requires verification:** Auth0 bot detection after many password logins. Sign in once in the SP app, wait a few minutes, then reload or reauthenticate.
+- **No Energy statistics:** wait for the first poll, hard-refresh Energy settings, then pick `sensor.sp_group_utilities_electricity`, not last-billed or meter sensors.
+- **Missing optional sensor after upgrade:** reload the SP Group integration so setup can create new entities.
 
 ## Development
 
