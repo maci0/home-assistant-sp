@@ -38,6 +38,10 @@ from .const import (
     AUTH0_AUDIENCE,
     AUTH0_CLIENT_ID,
     AUTH0_GRANT_TYPE,
+    AUTH0_MFA_AUTHENTICATORS_PATH,
+    AUTH0_MFA_CHALLENGE_PATH,
+    AUTH0_MFA_OAUTH_HOST,
+    AUTH0_MFA_OOB_GRANT,
     AUTH0_MFA_OTP_GRANT,
     AUTH0_REALM,
     AUTH0_REFRESH_GRANT,
@@ -88,6 +92,7 @@ from .models import (
     GreenUpInfo,
     MeterReadingInfo,
     MeterRegister,
+    MfaChallenge,
     OptionalReads,
     PayableInfo,
     PeriodReading,
@@ -381,6 +386,76 @@ def _oauth_headers() -> dict[str, str]:
         "User-Agent": USER_AGENT,
         "Accept": "application/json",
     }
+
+
+def _factor_usable(factor: dict[str, object]) -> bool:
+    """Enrolled and not explicitly disabled."""
+    return bool(factor.get("id")) and factor.get("active") is not False
+
+
+def _pick_mfa_factor(
+    authenticators: tuple[dict[str, object], ...],
+) -> dict[str, object] | None:
+    """Choose the login factor an account can use.
+
+    Prefers the TOTP factor (stable, no short-lived out-of-band code), then a
+    usable out-of-band factor (SMS, then email). A recovery-code factor is not
+    a usable login factor and is ignored. Returns None when only recovery codes
+    (or nothing) are enrolled. Factors with ``active: false`` are skipped.
+    """
+    for factor in authenticators:
+        if factor.get("authenticator_type") in {"otp", "totp"} and _factor_usable(
+            factor
+        ):
+            return factor
+    oob: dict[str, dict[str, object]] = {}
+    for factor in authenticators:
+        if factor.get("authenticator_type") != "oob" or not _factor_usable(factor):
+            continue
+        channel = factor.get("oob_channel")
+        if channel in {"sms", "email"}:
+            oob[channel] = factor
+    sms = oob.get("sms")
+    if sms is not None:
+        return sms
+    return oob.get("email")
+
+
+def _oob_factor_authenticator_id(factor: dict[str, object] | None) -> str | None:
+    """The authenticator_id to challenge, or None when the factor is not OOB.
+
+    Only an out-of-band factor (``authenticator_type == "oob"``) with a
+    non-empty id is challengable; returns None for TOTP, recovery-code, or a
+    malformed factor. This is the gate that decides whether a challenge should
+    be attempted at all.
+    """
+    if factor is None or factor.get("authenticator_type") != "oob":
+        return None
+    authenticator_id = factor.get("id")
+    if not isinstance(authenticator_id, str) or not authenticator_id:
+        return None
+    return authenticator_id
+
+
+def _mfa_channel_from_challenge(
+    factor: dict[str, object] | None, challenge: MfaChallenge | None
+) -> tuple[str, str | None]:
+    """Decide the MFA channel and OOB code from a (maybe failed) challenge.
+
+    Returns ``("oob", oob_code)`` only when the factor is OOB and the challenge
+    produced a usable code; otherwise ``("totp", None)``. The invariant this
+    enforces is that the channel is NEVER ``"oob"`` without a usable oob_code,
+    so a later step can always read ``context["mfa_oob_code"]`` safely.
+    """
+    if _oob_factor_authenticator_id(factor) is None:
+        return "totp", None
+    if (
+        challenge is None
+        or not isinstance(challenge.oob_code, str)
+        or not challenge.oob_code.strip()
+    ):
+        return "totp", None
+    return "oob", challenge.oob_code
 
 
 def _normalize_volume_unit(unit: str) -> str:
@@ -956,6 +1031,135 @@ class SpGroupClient:
         session = _session_from_oauth(mapping, None)
         self._session = session
         return session
+
+    def _auth0_mfa_request(
+        self,
+        method: str,
+        path: str,
+        mfa_token: str,
+        *,
+        body: dict[str, str] | None = None,
+    ) -> object:
+        """Request to the Auth0 MFA host (a different host than _oauth_post).
+
+        Returns the parsed JSON body (a dict, or a bare list for the
+        authenticators endpoint).
+        """
+        headers = _oauth_headers()
+        headers["Authorization"] = f"Bearer {mfa_token}"
+        response = self._transport.request(
+            method,
+            f"{AUTH0_MFA_OAUTH_HOST}{path}",
+            headers,
+            json.dumps(body).encode("utf-8") if body is not None else None,
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
+        url = f"{AUTH0_MFA_OAUTH_HOST}{path}"
+        if response.status >= 400 and response.status not in AUTH_REJECT_STATUSES:
+            # 429 or 5xx is Auth0 being unavailable, not a factor problem.
+            raise TransportError(f"{method} {url} returned HTTP {response.status}")
+        parsed = _require_json(response, "mfa")
+        if response.status >= 400:
+            detail = parsed if isinstance(parsed, dict) else {}
+            error = str(detail.get("error") or detail.get("code") or "invalid_grant")
+            description = str(
+                detail.get("error_description")
+                or detail.get("description")
+                or "authentication failed"
+            )
+            raise AuthError(error, description)
+        return parsed
+
+    def list_mfa_authenticators(self, mfa_token: str) -> tuple[dict[str, object], ...]:
+        """List the enrolled Auth0 MFA factors for an in-progress login."""
+        parsed = self._auth0_mfa_request(
+            "GET", AUTH0_MFA_AUTHENTICATORS_PATH, mfa_token
+        )
+        # Auth0 returns a bare array of factors here, not {"authenticators": [...]}.
+        rows: object = (
+            parsed.get("authenticators") if isinstance(parsed, dict) else parsed
+        )
+        if not isinstance(rows, list):
+            return ()
+        authenticators: list[dict[str, object]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            authenticators.append(
+                {
+                    "id": row.get("id"),
+                    "authenticator_type": row.get("authenticator_type"),
+                    "oob_channel": row.get("oob_channel"),
+                    "type": row.get("type"),
+                }
+            )
+        return tuple(authenticators)
+
+    def challenge_mfa(self, mfa_token: str, authenticator_id: str) -> MfaChallenge:
+        """Trigger the SMS/email OOB challenge and return the code handle."""
+        parsed = self._auth0_mfa_request(
+            "POST",
+            AUTH0_MFA_CHALLENGE_PATH,
+            mfa_token,
+            body={
+                "client_id": AUTH0_CLIENT_ID,
+                "mfa_token": mfa_token,
+                "challenge_type": "oob",
+                "authenticator_id": authenticator_id,
+            },
+        )
+        mapping = parsed if isinstance(parsed, dict) else {}
+        oob_code = mapping.get("oob_code")
+        binding_method = mapping.get("binding_method")
+        if not isinstance(oob_code, str) or not oob_code:
+            raise AuthError("challenge_failed", "oob_code missing in challenge")
+        binding = str(binding_method).lower() if binding_method else "prompt"
+        if binding != "prompt":
+            # Only a "prompt" OOB challenge can be satisfied by a single code
+            # entered in the form; anything else cannot, so fall back to TOTP
+            # rather than present an unsatisfiable code form.
+            raise AuthError(
+                "challenge_failed", f"unsupported binding_method: {binding}"
+            )
+        return MfaChallenge(
+            oob_code=oob_code,
+            binding_method=str(binding_method) if binding_method else "prompt",
+        )
+
+    def submit_mfa_oob(
+        self, mfa_token: str, oob_code: str, binding_code: str
+    ) -> Session:
+        """Exchange an Auth0 MFA token and OOB code for a session."""
+        payload = {
+            "grant_type": AUTH0_MFA_OOB_GRANT,
+            "client_id": AUTH0_CLIENT_ID,
+            "mfa_token": mfa_token,
+            "oob_code": oob_code,
+            "binding_code": binding_code,
+        }
+        mapping = self._oauth_post(payload)
+        session = _session_from_oauth(mapping, None)
+        self._session = session
+        return session
+
+    def prepare_mfa(self, mfa_token: str) -> tuple[str, str | None]:
+        """Pick a factor and send the SMS/email challenge when that is the path.
+
+        Returns ``("oob", oob_code)`` only when the challenge produced a usable
+        code. Probe or challenge failures fall back to ``("totp", None)``.
+        """
+        try:
+            factor = _pick_mfa_factor(self.list_mfa_authenticators(mfa_token))
+        except (AuthError, UsageError, OSError):
+            return "totp", None
+        authenticator_id = _oob_factor_authenticator_id(factor)
+        if authenticator_id is None:
+            return "totp", None
+        try:
+            challenge = self.challenge_mfa(mfa_token, authenticator_id)
+        except (AuthError, UsageError, OSError):
+            return "totp", None
+        return _mfa_channel_from_challenge(factor, challenge)
 
     def refresh(self) -> Session:
         current = self._session

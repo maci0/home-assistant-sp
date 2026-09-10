@@ -28,6 +28,12 @@ class UtilitySeries:
 
 
 @dataclass(frozen=True)
+class MfaChallenge:
+    oob_code: str
+    binding_method: str
+
+
+@dataclass(frozen=True)
 class PremiseInfo:
     id: str
     address: str | None

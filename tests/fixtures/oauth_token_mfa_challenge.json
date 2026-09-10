@@ -1,0 +1,5 @@
+{
+  "challenge_type": "oob",
+  "oob_code": "oob-code",
+  "binding_method": "prompt"
+}

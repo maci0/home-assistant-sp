@@ -1,0 +1,24 @@
+{
+  "authenticators": [
+    {
+      "id": "recovery-code|dev_abc123",
+      "authenticator_type": "recovery-code",
+      "active": true,
+      "type": "recovery-code"
+    },
+    {
+      "id": "sms|dev_abc123",
+      "authenticator_type": "oob",
+      "oob_channel": "sms",
+      "active": true,
+      "type": "phone"
+    },
+    {
+      "id": "email|dev_abc123",
+      "authenticator_type": "oob",
+      "oob_channel": "email",
+      "active": true,
+      "type": "email"
+    }
+  ]
+}

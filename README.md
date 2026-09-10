@@ -25,7 +25,7 @@ Device name in the live UI is the SP premise address. The shots below use a plac
 2. URL `https://github.com/maci0/home-assistant-sp`, category Integration
 3. Download **SP Group**, restart Home Assistant
 4. Settings → Devices & services → Add integration → **SP Group**
-5. Sign in with the same e-account email and password as the SP app. If Auth0 requires MFA, enter the authenticator code.
+5. Sign in with the same e-account email and password as the SP app. If Auth0 requires MFA, enter the code from SMS, email, or an authenticator app.
 
 Until this is in the HACS default store, the custom repository step is required. HACS then tracks GitHub releases.
 
@@ -100,7 +100,7 @@ Reconfigure the entry if the password changes. Reauth starts when the stored ses
 
 Required, in order:
 
-1. `POST https://identity.spdigital.sg/oauth/token` Auth0 password-realm, mfa-otp when MFA is required, or refresh_token. Scopes include `me me:uportal me:eva me:rbac`
+1. `POST https://identity.spdigital.sg/oauth/token` Auth0 password-realm, mfa-otp (authenticator) or mfa-oob (SMS/email) when MFA is required, or refresh_token. Scopes include `me me:uportal me:eva me:rbac`
 2. `GET https://b2c.api.spdigital.sg/jarvis/v3/me`
 3. `GET https://b2c.api.spdigital.sg/jarvis/v4/charts/{premise_id}`
 4. `POST https://b2c.api.spdigital.sg/jarvis/v3/ami/charts` when `ami_elec` (`grouped_by` `day` then `month`)

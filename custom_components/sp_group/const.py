@@ -47,6 +47,10 @@ AUTH0_SCOPE = (
 )
 AUTH0_GRANT_TYPE = "http://auth0.com/oauth/grant-type/password-realm"
 AUTH0_MFA_OTP_GRANT = "http://auth0.com/oauth/grant-type/mfa-otp"
+AUTH0_MFA_OOB_GRANT = "http://auth0.com/oauth/grant-type/mfa-oob"
+AUTH0_MFA_OAUTH_HOST = "https://identity.spdigital.auth0.com"
+AUTH0_MFA_AUTHENTICATORS_PATH = "/mfa/authenticators"
+AUTH0_MFA_CHALLENGE_PATH = "/mfa/challenge"
 AUTH0_REFRESH_GRANT = "refresh_token"
 AUTH0_REALM = "Username-Password-Authentication"
 TOKEN_EXPIRY_BUFFER_SECONDS = 60

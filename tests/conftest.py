@@ -10,6 +10,10 @@ from urllib.parse import urlparse
 from custom_components.sp_group.client import HttpResponse, SpGroupClient
 from custom_components.sp_group.const import (
     AUTH0_GRANT_TYPE,
+    AUTH0_MFA_AUTHENTICATORS_PATH,
+    AUTH0_MFA_CHALLENGE_PATH,
+    AUTH0_MFA_OAUTH_HOST,
+    AUTH0_MFA_OOB_GRANT,
     AUTH0_MFA_OTP_GRANT,
     B2C_HOST,
     IDENTITY_HOST,
@@ -53,6 +57,9 @@ class FixtureTransport:
     fail_login: bool = False
     require_mfa: bool = False
     mfa_success: bool = False
+    mfa_oob: bool = False
+    mfa_challenge_binding: str = "prompt"
+    authenticators_bare: bool = False
     charts_fixture: str = "jarvis_charts.json"
     me_fixture: str = "jarvis_me.json"
     smrd_fixture: str | None = "jarvis_smrd.json"
@@ -83,10 +90,20 @@ class FixtureTransport:
             import json
 
             request_body = json.loads(body.decode("utf-8")) if body else {}
-            if self.require_mfa and request_body.get("grant_type") == AUTH0_GRANT_TYPE:
+            if (self.require_mfa or self.mfa_oob) and request_body.get(
+                "grant_type"
+            ) == AUTH0_GRANT_TYPE:
                 return HttpResponse(
                     status=403,
                     body=load_fixture("oauth_token_mfa_required.json"),
+                )
+            if (
+                self.mfa_success
+                and request_body.get("grant_type") == AUTH0_MFA_OOB_GRANT
+            ):
+                return HttpResponse(
+                    status=200,
+                    body=load_fixture("oauth_token_mfa_success.json"),
                 )
             if (
                 self.mfa_success
@@ -104,6 +121,33 @@ class FixtureTransport:
             return HttpResponse(
                 status=200,
                 body=load_fixture("oauth_token_success.json"),
+            )
+        if (
+            method == "GET"
+            and origin == AUTH0_MFA_OAUTH_HOST
+            and path == AUTH0_MFA_AUTHENTICATORS_PATH
+        ):
+            fixture = (
+                "oauth_token_mfa_authenticators_bare.json"
+                if self.authenticators_bare
+                else "oauth_token_mfa_authenticators_sms.json"
+            )
+            return HttpResponse(status=200, body=load_fixture(fixture))
+        if (
+            method == "POST"
+            and origin == AUTH0_MFA_OAUTH_HOST
+            and path == AUTH0_MFA_CHALLENGE_PATH
+        ):
+            import json
+
+            challenge = {
+                "challenge_type": "oob",
+                "oob_code": "oob-code",
+                "binding_method": self.mfa_challenge_binding,
+            }
+            return HttpResponse(
+                status=200,
+                body=json.dumps(challenge).encode("utf-8"),
             )
         if method == "GET" and origin == B2C_HOST and path == JARVIS_ME_PATH:
             return HttpResponse(

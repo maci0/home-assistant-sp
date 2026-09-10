@@ -73,6 +73,24 @@ async def _validate_mfa(
     return _entry_data(client, username, password)
 
 
+async def _validate_mfa_oob(
+    hass: HomeAssistant,
+    username: str,
+    password: str,
+    mfa_token: str,
+    oob_code: str,
+    binding_code: str,
+) -> dict[str, str]:
+    client = SpGroupClient()
+
+    def _submit_and_fetch() -> None:
+        client.submit_mfa_oob(mfa_token, oob_code, binding_code)
+        client.fetch_usage()
+
+    await hass.async_add_executor_job(_submit_and_fetch)
+    return _entry_data(client, username, password)
+
+
 def _auth_error_key(exc: AuthError) -> str:
     return (
         "requires_verification"
@@ -93,14 +111,21 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    def _start_mfa(
+    async def _start_mfa(
         self,
         exc: AuthError,
         user_input: dict[str, Any],
         mode: str,
         entry: config_entries.ConfigEntry | None = None,
     ) -> config_entries.ConfigFlowResult | None:
-        """The OTP form when Auth0 asked for a code, else None to report the error."""
+        """The verification form when Auth0 asked for a code, else None to report.
+
+        When the account's only enrolled factor is an out-of-band (SMS/email)
+        oob factor, the challenge that sends the code is triggered here, before
+        the user-facing form, so the code arrives while the form is shown. Any
+        failure to probe or challenge falls back to the TOTP single-code form
+        and lets the server tell the user.
+        """
         if exc.error != "mfa_required" or not exc.mfa_token:
             return None
         self._mfa_context = {
@@ -110,6 +135,13 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "mode": mode,
             "entry": entry,
         }
+        client = SpGroupClient()
+        mfa_channel, mfa_oob_code = await self.hass.async_add_executor_job(
+            client.prepare_mfa, exc.mfa_token
+        )
+        self._mfa_context["mfa_channel"] = mfa_channel
+        if mfa_oob_code is not None:
+            self._mfa_context["mfa_oob_code"] = mfa_oob_code
         return self._mfa_form()
 
     async def async_step_mfa(
@@ -119,13 +151,23 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             context = self._mfa_context
             try:
-                data = await _validate_mfa(
-                    self.hass,
-                    context[CONF_USERNAME],
-                    context[CONF_PASSWORD],
-                    context["mfa_token"],
-                    user_input[CONF_MFA_CODE],
-                )
+                if context.get("mfa_channel") == "oob":
+                    data = await _validate_mfa_oob(
+                        self.hass,
+                        context[CONF_USERNAME],
+                        context[CONF_PASSWORD],
+                        context["mfa_token"],
+                        context["mfa_oob_code"],
+                        user_input[CONF_MFA_CODE],
+                    )
+                else:
+                    data = await _validate_mfa(
+                        self.hass,
+                        context[CONF_USERNAME],
+                        context[CONF_PASSWORD],
+                        context["mfa_token"],
+                        user_input[CONF_MFA_CODE],
+                    )
             except AuthError as exc:
                 errors["base"] = _auth_error_key(exc)
             except (UsageError, OSError):
@@ -152,7 +194,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_PASSWORD],
                 )
             except AuthError as exc:
-                mfa = self._start_mfa(exc, user_input, "user")
+                mfa = await self._start_mfa(exc, user_input, "user")
                 if mfa is not None:
                     return mfa
                 errors["base"] = _auth_error_key(exc)
@@ -187,7 +229,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_PASSWORD],
                 )
             except AuthError as exc:
-                mfa = self._start_mfa(exc, user_input, "reauth", reauth_entry)
+                mfa = await self._start_mfa(exc, user_input, "reauth", reauth_entry)
                 if mfa is not None:
                     return mfa
                 errors["base"] = _auth_error_key(exc)
@@ -226,7 +268,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_PASSWORD],
                 )
             except AuthError as exc:
-                mfa = self._start_mfa(exc, user_input, "reconfigure", entry)
+                mfa = await self._start_mfa(exc, user_input, "reconfigure", entry)
                 if mfa is not None:
                     return mfa
                 errors["base"] = _auth_error_key(exc)

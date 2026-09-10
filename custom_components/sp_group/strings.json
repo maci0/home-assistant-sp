@@ -11,7 +11,7 @@
       },
       "mfa": {
         "title": "SP Group verification",
-        "description": "Enter the one-time code from your authenticator app.",
+        "description": "Enter the one-time verification code.",
         "data": {
           "mfa_code": "Verification code"
         }

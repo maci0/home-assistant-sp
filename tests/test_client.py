@@ -7,11 +7,23 @@ import time
 
 import pytest
 
-from custom_components.sp_group.client import AuthError, Session, SpGroupClient
+from custom_components.sp_group.client import (
+    AuthError,
+    MfaChallenge,
+    Session,
+    SpGroupClient,
+    _mfa_channel_from_challenge,
+    _oob_factor_authenticator_id,
+    _pick_mfa_factor,
+)
 from custom_components.sp_group.const import (
     AUTH0_AUDIENCE,
     AUTH0_CLIENT_ID,
     AUTH0_GRANT_TYPE,
+    AUTH0_MFA_AUTHENTICATORS_PATH,
+    AUTH0_MFA_CHALLENGE_PATH,
+    AUTH0_MFA_OAUTH_HOST,
+    AUTH0_MFA_OOB_GRANT,
     AUTH0_MFA_OTP_GRANT,
     AUTH0_REALM,
     AUTH0_REFRESH_GRANT,
@@ -99,6 +111,402 @@ def test_mfa_challenge_exposes_token_and_submit_sends_otp() -> None:
         "mfa_token": "mfa-token",
         "otp": "123456",
     }
+
+
+def test_mfa_oob_lists_challenges_and_submits_binding_code() -> None:
+    transport = FixtureTransport(mfa_oob=True, mfa_success=True)
+    client = SpGroupClient(transport=transport)
+
+    with pytest.raises(AuthError) as raised:
+        client.login("user@example.com", "secret")
+
+    assert raised.value.error == "mfa_required"
+    assert raised.value.mfa_token == "mfa-token"
+
+    authenticators = client.list_mfa_authenticators("mfa-token")
+    assert authenticators
+    sms = next(
+        factor
+        for factor in authenticators
+        if factor["authenticator_type"] == "oob" and factor["oob_channel"] == "sms"
+    )
+    assert sms["id"] == "sms|dev_abc123"
+
+    listed = transport.requests[1]
+    assert listed.method == "GET"
+    assert listed.url == f"{AUTH0_MFA_OAUTH_HOST}{AUTH0_MFA_AUTHENTICATORS_PATH}"
+    assert listed.headers["Authorization"] == "Bearer mfa-token"
+
+    challenge = client.challenge_mfa("mfa-token", "sms|dev_abc123")
+    assert challenge.oob_code == "oob-code"
+    assert challenge.binding_method == "prompt"
+
+    challenged = transport.requests[2]
+    assert challenged.method == "POST"
+    assert challenged.url == f"{AUTH0_MFA_OAUTH_HOST}{AUTH0_MFA_CHALLENGE_PATH}"
+    assert challenged.headers["Authorization"] == "Bearer mfa-token"
+    assert challenged.body is not None
+    challenge_body = json.loads(challenged.body.decode("utf-8"))
+    assert challenge_body == {
+        "client_id": AUTH0_CLIENT_ID,
+        "mfa_token": "mfa-token",
+        "challenge_type": "oob",
+        "authenticator_id": "sms|dev_abc123",
+    }
+
+    session = client.submit_mfa_oob("mfa-token", "oob-code", "654321")
+    assert session.access_token == "mfa-access-token"
+    assert session.id_token == "mfa-id-token"
+    assert session.refresh_token == "mfa-refresh-token"
+
+    submitted = transport.requests[3]
+    assert submitted.url == f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
+    assert submitted.body is not None
+    submit_body = json.loads(submitted.body.decode("utf-8"))
+    assert submit_body == {
+        "grant_type": AUTH0_MFA_OOB_GRANT,
+        "client_id": AUTH0_CLIENT_ID,
+        "mfa_token": "mfa-token",
+        "oob_code": "oob-code",
+        "binding_code": "654321",
+    }
+
+
+def test_list_mfa_authenticators_parses_bare_array_response() -> None:
+    # Regression: Auth0 /mfa/authenticators returns a BARE JSON array, not
+    # {"authenticators": [...]}. The old parser coerced it to {} and listed
+    # zero factors, so no OOB challenge (SMS) was ever fired.
+    transport = FixtureTransport(authenticators_bare=True)
+    client = SpGroupClient(transport=transport)
+
+    authenticators = client.list_mfa_authenticators("mfa-token")
+
+    assert {factor["id"] for factor in authenticators} == {
+        "recovery-code|dev_abc123",
+        "sms|dev_abc123",
+        "email|dev_abc123",
+    }
+    sms = next(
+        factor
+        for factor in authenticators
+        if factor["authenticator_type"] == "oob" and factor["oob_channel"] == "sms"
+    )
+    assert sms["id"] == "sms|dev_abc123"
+    assert sms["type"] == "phone"
+
+
+def test_pick_mfa_factor_sms_only() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "sms|dev_abc123",
+                "authenticator_type": "oob",
+                "oob_channel": "sms",
+                "type": "phone",
+            },
+            {
+                "id": "recovery-code|dev_abc123",
+                "authenticator_type": "recovery-code",
+                "active": True,
+                "type": "recovery-code",
+            },
+        )
+    )
+    assert factor is not None
+    assert factor["oob_channel"] == "sms"
+    assert factor["authenticator_type"] == "oob"
+
+
+def test_pick_mfa_factor_email_only() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "email|dev_abc123",
+                "authenticator_type": "oob",
+                "oob_channel": "email",
+                "active": True,
+                "type": "email",
+            },
+        )
+    )
+    assert factor is not None
+    assert factor["oob_channel"] == "email"
+
+
+def test_pick_mfa_factor_prefers_sms_over_email() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "email|dev_abc123",
+                "authenticator_type": "oob",
+                "oob_channel": "email",
+                "active": True,
+                "type": "email",
+            },
+            {
+                "id": "sms|dev_abc123",
+                "authenticator_type": "oob",
+                "oob_channel": "sms",
+                "active": True,
+                "type": "phone",
+            },
+        )
+    )
+    assert factor is not None
+    assert factor["oob_channel"] == "sms"
+
+
+def test_pick_mfa_factor_prefers_totp_over_sms() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "sms|dev_abc123",
+                "authenticator_type": "oob",
+                "oob_channel": "sms",
+                "active": True,
+                "type": "phone",
+            },
+            {
+                "id": "totp|dev_abc123",
+                "authenticator_type": "otp",
+                "active": True,
+                "type": "totp",
+            },
+        )
+    )
+    assert factor is not None
+    assert factor["authenticator_type"] == "otp"
+    assert factor["id"] == "totp|dev_abc123"
+
+
+def test_pick_mfa_factor_totp_blank_id_falls_through_to_sms() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "",
+                "authenticator_type": "otp",
+                "active": True,
+                "type": "totp",
+            },
+            {
+                "id": "sms|dev_abc123",
+                "authenticator_type": "oob",
+                "oob_channel": "sms",
+                "active": True,
+                "type": "phone",
+            },
+        )
+    )
+    assert factor is not None
+    assert factor["authenticator_type"] == "oob"
+    assert factor["oob_channel"] == "sms"
+
+
+def test_pick_mfa_factor_prefers_totp_literal_over_sms() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "sms|dev_abc123",
+                "authenticator_type": "oob",
+                "oob_channel": "sms",
+                "active": True,
+                "type": "phone",
+            },
+            {
+                "id": "totp|dev_abc123",
+                "authenticator_type": "totp",
+                "active": True,
+                "type": "totp",
+            },
+        )
+    )
+    assert factor is not None
+    assert factor["authenticator_type"] == "totp"
+    assert factor["id"] == "totp|dev_abc123"
+
+
+def test_pick_mfa_factor_otp_only_returns_otp_factor() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "totp|dev_abc123",
+                "authenticator_type": "otp",
+                "active": True,
+                "type": "totp",
+            },
+            {
+                "id": "recovery-code|dev_abc123",
+                "authenticator_type": "recovery-code",
+                "active": True,
+                "type": "recovery-code",
+            },
+        )
+    )
+    assert factor is not None
+    assert factor["authenticator_type"] == "otp"
+    assert factor["id"] == "totp|dev_abc123"
+
+
+def test_pick_mfa_factor_recovery_code_only_is_not_a_factor() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "recovery-code|dev_abc123",
+                "authenticator_type": "recovery-code",
+                "active": True,
+                "type": "recovery-code",
+            },
+        )
+    )
+    assert factor is None
+
+
+def test_pick_mfa_factor_skips_inactive_sms() -> None:
+    factor = _pick_mfa_factor(
+        (
+            {
+                "id": "sms|dev_inactive",
+                "authenticator_type": "oob",
+                "oob_channel": "sms",
+                "active": False,
+                "type": "phone",
+            },
+            {
+                "id": "email|dev_abc123",
+                "authenticator_type": "oob",
+                "oob_channel": "email",
+                "active": True,
+                "type": "email",
+            },
+        )
+    )
+    assert factor is not None
+    assert factor["oob_channel"] == "email"
+
+
+def _oob_sms_factor() -> dict[str, object]:
+    return {
+        "id": "sms|dev_abc123",
+        "authenticator_type": "oob",
+        "oob_channel": "sms",
+        "active": True,
+        "type": "phone",
+    }
+
+
+def _totp_factor() -> dict[str, object]:
+    return {
+        "id": "totp|dev_abc123",
+        "authenticator_type": "otp",
+        "active": True,
+        "type": "totp",
+    }
+
+
+def _recovery_factor() -> dict[str, object]:
+    return {
+        "id": "recovery-code|dev_abc123",
+        "authenticator_type": "recovery-code",
+        "active": True,
+        "type": "recovery-code",
+    }
+
+
+def test_oob_factor_authenticator_id_extracts_oob_id() -> None:
+    assert _oob_factor_authenticator_id(_oob_sms_factor()) == "sms|dev_abc123"
+
+
+def test_oob_factor_authenticator_id_returns_none_for_totp_and_recovery() -> None:
+    assert _oob_factor_authenticator_id(_totp_factor()) is None
+    assert _oob_factor_authenticator_id(_recovery_factor()) is None
+    assert _oob_factor_authenticator_id(None) is None
+
+
+def test_oob_factor_authenticator_id_requires_string_id() -> None:
+    factor: dict[str, object] = {
+        "id": "",
+        "authenticator_type": "oob",
+        "oob_channel": "sms",
+    }
+    assert _oob_factor_authenticator_id(factor) is None
+    factor["id"] = 123
+    assert _oob_factor_authenticator_id(factor) is None
+
+
+def test_mfa_channel_oob_with_valid_challenge() -> None:
+    channel, oob_code = _mfa_channel_from_challenge(
+        _oob_sms_factor(), MfaChallenge(oob_code="oob-code", binding_method="prompt")
+    )
+    assert channel == "oob"
+    assert oob_code == "oob-code"
+
+
+def test_mfa_channel_falls_back_when_challenge_is_none() -> None:
+    channel, oob_code = _mfa_channel_from_challenge(_oob_sms_factor(), None)
+    assert channel == "totp"
+    assert oob_code is None
+
+
+def test_mfa_channel_never_oob_without_a_code() -> None:
+    no_code = MfaChallenge(oob_code="", binding_method="prompt")
+    channel, oob_code = _mfa_channel_from_challenge(_oob_sms_factor(), no_code)
+    assert channel == "totp"
+    assert oob_code is None
+    blank = MfaChallenge(oob_code="   ", binding_method="prompt")
+    channel, oob_code = _mfa_channel_from_challenge(_oob_sms_factor(), blank)
+    assert channel == "totp"
+    assert oob_code is None
+
+
+def test_mfa_channel_totp_for_non_oob_factor() -> None:
+    channel, oob_code = _mfa_channel_from_challenge(
+        _totp_factor(), MfaChallenge(oob_code="oob-code", binding_method="prompt")
+    )
+    assert channel == "totp"
+    assert oob_code is None
+    channel, _ = _mfa_channel_from_challenge(_recovery_factor(), None)
+    assert channel == "totp"
+
+
+def test_challenge_mfa_rejects_non_prompt_binding_method() -> None:
+    transport = FixtureTransport(mfa_oob=True, mfa_challenge_binding="enter_code")
+    client = SpGroupClient(transport=transport)
+
+    with pytest.raises(AuthError) as raised:
+        client.login("user@example.com", "secret")
+    mfa_token = raised.value.mfa_token
+
+    with pytest.raises(AuthError) as exc_info:
+        client.challenge_mfa(mfa_token, "sms|dev_abc123")
+    assert exc_info.value.error == "challenge_failed"
+
+    channel, oob_code = _mfa_channel_from_challenge(_oob_sms_factor(), None)
+    assert channel == "totp"
+    assert oob_code is None
+
+
+def test_prepare_mfa_challenges_sms_and_returns_oob() -> None:
+    transport = FixtureTransport(mfa_oob=True)
+    client = SpGroupClient(transport=transport)
+
+    channel, oob_code = client.prepare_mfa("mfa-token")
+
+    assert channel == "oob"
+    assert oob_code == "oob-code"
+    assert transport.requests[0].method == "GET"
+    assert transport.requests[1].method == "POST"
+    challenged = transport.requests[1]
+    assert challenged.url == f"{AUTH0_MFA_OAUTH_HOST}{AUTH0_MFA_CHALLENGE_PATH}"
+
+
+def test_prepare_mfa_falls_back_when_binding_is_not_prompt() -> None:
+    transport = FixtureTransport(mfa_oob=True, mfa_challenge_binding="enter_code")
+    client = SpGroupClient(transport=transport)
+
+    channel, oob_code = client.prepare_mfa("mfa-token")
+
+    assert channel == "totp"
+    assert oob_code is None
 
 
 def test_stored_session_skips_password_login() -> None:
