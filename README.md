@@ -37,10 +37,12 @@ Copy `custom_components/sp_group` into `<config>/custom_components/sp_group` and
 
 Polls every 30 minutes. After the first successful poll, long-term statistics are written for electricity (and gas when present).
 
-- Grid consumption: `sensor.sp_group_utilities_electricity` (**Electricity cumulative**) only. That series is AMI half-hours folded to clock hours when the premise has `ami_elec`, otherwise billed monthly kWh. It is the loaded window (~13 months), not today.
+- Grid consumption: the external statistic **SP Group electricity** (`sp_group:{premise_id}_electricity`), not a sensor. That series is AMI half-hours folded to clock hours when the premise has `ami_elec`, otherwise billed monthly kWh. It is the loaded window (~13 months), not today.
+- Cost: set **Electricity price** in the integration's options (SGD per kWh, incl. GST; SP publishes the regulated tariff quarterly). The integration then writes **SP Group electricity cost** (`sp_group:{premise_id}_electricity_cost`); pick it as the grid source's total-cost statistic. HA cannot derive cost from a fixed price for an external statistic on its own.
+- Do not pick **Electricity cumulative** as the grid source. The recorder compiles that sensor from its state with a sum that starts at zero, which would disagree with the imported AMI sums and show a negative day.
 - Do not add **Electricity last billed**, **Electricity meter**, or **Electricity this month** as grid sources. They are a different number: last billed period, the physical register, and Green Goals month-to-date.
 - Leave Water empty in Energy. SP bills water monthly. **Water** is the sum of billed months; **Water meter** is the lifetime register. Neither is an hourly series.
-- Gas: `sensor.sp_group_utilities_gas` only if Jarvis returned billed gas periods.
+- Gas: **SP Group gas** (`sp_group:{premise_id}_gas`) only if Jarvis returned billed gas periods.
 
 AMI electricity lags a few hours. Empty future 30-minute slots are dropped. **Electricity last 30 min** is the last published slot, not the clock hour.
 
@@ -52,7 +54,7 @@ Names below are the entity names. Unique id is `{premise_id}_{key}`. Optional ro
 
 | Name | Key | What it is |
 | --- | --- | --- |
-| Electricity cumulative | `electricity` | AMI / billed total for the loaded window (~13 months). Energy grid source. Unique id stays `electricity` |
+| Electricity cumulative | `electricity` | AMI / billed total for the loaded window (~13 months). Unique id stays `electricity`. Energy uses the `sp_group:` statistic, not this sensor |
 | Electricity last billed | `electricity_last_period` | Latest billed month kWh |
 | Electricity today | `electricity_today` | AMI kWh for today in SGT |
 | Electricity last 30 min | `electricity_last_hour` | Last published AMI slot |
@@ -130,7 +132,7 @@ Bill pay, GIRO setup, UniDollar pay, add card, start/stop EV charge, meter-readi
 
 - **invalid_claim / rejected session token:** the client must request the `me:*` scopes. Use this repo, not a stale copy.
 - **Suspicious request requires verification:** Auth0 bot detection after many password logins. Sign in once in the SP app, wait a few minutes, then reload or reauthenticate.
-- **No Energy statistics:** wait for the first poll, hard-refresh Energy settings, then pick `sensor.sp_group_utilities_electricity`, not last-billed or meter sensors.
+- **No Energy statistics:** wait for the first poll, hard-refresh Energy settings, then pick **SP Group electricity** (`sp_group:{premise_id}_electricity`), not a sensor.
 - **Missing optional sensor after upgrade:** wait for the next poll. New keys are added without a reload.
 
 ## Examples
