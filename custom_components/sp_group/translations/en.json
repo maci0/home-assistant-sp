@@ -142,5 +142,16 @@
     "usage_failed": {
       "message": "Could not fetch usage from SP Group: {error}"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SP Group options",
+        "description": "Optional fixed electricity price. When set, an 'SP Group electricity cost' statistic is written for the Energy dashboard (pick it under 'Use an entity tracking the total costs'). Leave empty to disable.",
+        "data": {
+          "electricity_price": "Electricity price (SGD per kWh, incl. GST)"
+        }
+      }
+    }
   }
 }

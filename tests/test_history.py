@@ -8,7 +8,10 @@ from datetime import UTC, datetime
 import pytest
 
 from custom_components.sp_group.history import (
+    CumulativePoint,
+    cost_points,
     cumulative_points,
+    external_statistic_id,
     fold_half_hours,
     merge_ami_periods,
     monthly_bill_points,
@@ -106,3 +109,26 @@ def test_electricity_graph_uses_ami_not_billed() -> None:
     assert sum(item.amount for item in graph) == pytest.approx(24.0)
     points = cumulative_points(graph)
     assert points[-1].cumulative == pytest.approx(24.0)
+
+
+def test_external_statistic_id_is_recorder_safe() -> None:
+    assert external_statistic_id("2001590888", "electricity") == (
+        "sp_group:2001590888_electricity"
+    )
+
+
+def test_cost_points_scale_cumulative_kwh() -> None:
+    points = [
+        CumulativePoint(
+            start=datetime(2026, 9, 21, 0, tzinfo=SG_TZ), cumulative=8.4612
+        ),
+        CumulativePoint(
+            start=datetime(2026, 9, 21, 1, tzinfo=SG_TZ), cumulative=8.5793
+        ),
+    ]
+
+    cost = cost_points(points, 0.3478)
+
+    assert [c.start for c in cost] == [p.start for p in points]
+    assert cost[0].cumulative == pytest.approx(2.9428, abs=1e-4)
+    assert cost[1].cumulative == pytest.approx(2.9839, abs=1e-4)

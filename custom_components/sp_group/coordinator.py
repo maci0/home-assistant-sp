@@ -17,18 +17,25 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .client import AuthError, SpGroupClient, UsageError
 from .const import (
     CONF_ACCESS_TOKEN,
+    CONF_ELECTRICITY_PRICE,
     CONF_ID_TOKEN,
     CONF_REFRESH_TOKEN,
     DOMAIN,
     SENSOR_KEY_ELECTRICITY,
     SENSOR_KEY_GAS,
     SENSOR_KEY_LAST_BILL,
+    STATISTIC_KEY_ELECTRICITY_COST,
     UNIT_KWH,
     UNIT_SGD,
     UPDATE_INTERVAL,
     translated_error,
 )
-from .history import cumulative_points, monthly_bill_points
+from .history import (
+    cost_points,
+    cumulative_points,
+    external_statistic_id,
+    monthly_bill_points,
+)
 from .mapper import electricity_graph_periods
 from .models import UsageReadings
 
@@ -50,9 +57,25 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         self._platforms_ready = False
         self._stats_lock = asyncio.Lock()
         self._stats_task: asyncio.Task[None] | None = None
+        self._imported_price: float | None = None
 
     def mark_platforms_ready(self) -> None:
         self._platforms_ready = True
+
+    @property
+    def electricity_price(self) -> float | None:
+        """Fixed SGD/kWh price from the entry options, or None when unset."""
+        raw = self.entry.options.get(CONF_ELECTRICITY_PRICE)
+        try:
+            price = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+        return price if price and price > 0 else None
+
+    async def async_options_updated(self) -> None:
+        """Re-import the cost series when the configured price changed."""
+        if self.electricity_price != self._imported_price:
+            await self.async_import_billed_history()
 
     async def async_stop_stats_import(self) -> None:
         """Cancel an import still writing statistics when the entry goes away."""
@@ -156,25 +179,20 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         from homeassistant.components.recorder.models.statistics import (
             StatisticMeanType,
         )
-        from homeassistant.components.recorder.statistics import async_import_statistics
-        from homeassistant.helpers import entity_registry as er
+        from homeassistant.components.recorder.statistics import (
+            async_add_external_statistics,
+        )
 
-        registry = er.async_get(self.hass)
         for key, periods, unit, unit_class in self._history_series(usage):
-            entity_id = registry.async_get_entity_id(
-                "sensor", DOMAIN, f"{usage.premise_id}_{key}"
-            )
-            if entity_id is None:
-                continue
             points = cumulative_points(periods)
             if not points:
                 continue
             metadata = {
                 "has_sum": True,
                 "mean_type": StatisticMeanType.NONE,
-                "name": None,
-                "source": "recorder",
-                "statistic_id": entity_id,
+                "name": f"SP Group {key}",
+                "source": DOMAIN,
+                "statistic_id": external_statistic_id(usage.premise_id, key),
                 "unit_class": unit_class,
                 "unit_of_measurement": unit,
             }
@@ -186,18 +204,40 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 }
                 for point in points
             ]
-            async_import_statistics(self.hass, metadata, stats)
-        bill_id = registry.async_get_entity_id(
-            "sensor", DOMAIN, f"{usage.premise_id}_{SENSOR_KEY_LAST_BILL}"
-        )
+            async_add_external_statistics(self.hass, metadata, stats)
+            price = self.electricity_price
+            if key == SENSOR_KEY_ELECTRICITY and price is not None:
+                cost_metadata = {
+                    "has_sum": True,
+                    "mean_type": StatisticMeanType.NONE,
+                    "name": "SP Group electricity cost",
+                    "source": DOMAIN,
+                    "statistic_id": external_statistic_id(
+                        usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
+                    ),
+                    "unit_class": None,
+                    "unit_of_measurement": UNIT_SGD,
+                }
+                cost_stats = [
+                    {
+                        "start": point.start,
+                        "state": point.cumulative,
+                        "sum": point.cumulative,
+                    }
+                    for point in cost_points(points, price)
+                ]
+                async_add_external_statistics(self.hass, cost_metadata, cost_stats)
+            self._imported_price = price
         bill_points = monthly_bill_points(usage.bills)
-        if bill_id is not None and bill_points:
+        if bill_points:
             metadata = {
                 "has_sum": True,
                 "mean_type": StatisticMeanType.NONE,
-                "name": None,
-                "source": "recorder",
-                "statistic_id": bill_id,
+                "name": "SP Group bill",
+                "source": DOMAIN,
+                "statistic_id": external_statistic_id(
+                    usage.premise_id, SENSOR_KEY_LAST_BILL
+                ),
                 "unit_class": None,
                 "unit_of_measurement": UNIT_SGD,
             }
@@ -209,4 +249,4 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 }
                 for point in bill_points
             ]
-            async_import_statistics(self.hass, metadata, stats)
+            async_add_external_statistics(self.hass, metadata, stats)

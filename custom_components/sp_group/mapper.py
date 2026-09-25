@@ -431,7 +431,10 @@ def sensors_from_usage(usage: UsageReadings | None) -> list[SensorSpec]:
                 translation_key=SENSOR_KEY_ELECTRICITY_METER,
                 native_value=elec_meter.value,
                 device_class=DEVICE_CLASS_ENERGY,
-                state_class=STATE_CLASS_MEASUREMENT,
+                # A meter register is a running total; HA rejects measurement
+                # for energy/water. total, not total_increasing, so a downward
+                # SP correction is not taken for a meter reset.
+                state_class=STATE_CLASS_TOTAL,
                 unit_of_measurement=UNIT_KWH,
                 suggested_display_precision=0,
             )
@@ -444,7 +447,7 @@ def sensors_from_usage(usage: UsageReadings | None) -> list[SensorSpec]:
                 translation_key=SENSOR_KEY_WATER_METER,
                 native_value=water_meter.value,
                 device_class=DEVICE_CLASS_WATER,
-                state_class=STATE_CLASS_MEASUREMENT,
+                state_class=STATE_CLASS_TOTAL,
                 unit_of_measurement=UNIT_M3,
                 suggested_display_precision=1,
             )

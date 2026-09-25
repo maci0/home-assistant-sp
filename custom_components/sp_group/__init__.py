@@ -64,6 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> b
             str(exc), **translated_error("usage_failed", exc)
         ) from exc
     entry.runtime_data = coordinator
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     coordinator.mark_platforms_ready()
     await coordinator.async_import_billed_history()
@@ -73,3 +74,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> b
 async def async_unload_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> bool:
     await entry.runtime_data.async_stop_stats_import()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def _async_entry_updated(hass: HomeAssistant, entry: SpGroupConfigEntry) -> None:
+    """Options changed (the coordinator also updates data to persist tokens)."""
+    await entry.runtime_data.async_options_updated()

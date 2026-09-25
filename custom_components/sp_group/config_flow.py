@@ -9,11 +9,12 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 
 from .client import AuthError, SpGroupClient, UsageError
 from .const import (
     CONF_ACCESS_TOKEN,
+    CONF_ELECTRICITY_PRICE,
     CONF_ID_TOKEN,
     CONF_MFA_CODE,
     CONF_REFRESH_TOKEN,
@@ -99,8 +100,41 @@ def _auth_error_key(exc: AuthError) -> str:
     )
 
 
+class SpGroupOptionsFlow(config_entries.OptionsFlow):
+    """A fixed electricity price so the Energy dashboard can show cost."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if user_input is not None:
+            options = dict(self.config_entry.options)
+            price = user_input.get(CONF_ELECTRICITY_PRICE)
+            if price:
+                options[CONF_ELECTRICITY_PRICE] = float(price)
+            else:
+                options.pop(CONF_ELECTRICITY_PRICE, None)
+            return self.async_create_entry(title="", data=options)
+        current = self.config_entry.options.get(CONF_ELECTRICITY_PRICE)
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_ELECTRICITY_PRICE,
+                    description={"suggested_value": current},
+                ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
+
+
 class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> SpGroupOptionsFlow:
+        return SpGroupOptionsFlow()
 
     def _mfa_form(
         self, errors: dict[str, str] | None = None

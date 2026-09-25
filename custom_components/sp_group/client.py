@@ -77,6 +77,7 @@ from .const import (
     TARIFF_DEFAULT_CONSUMPTION_KWH,
     TOKEN_EXPIRY_BUFFER_SECONDS,
     TYCHE_WALLET_PATH,
+    UNIT_KWH,
     USER_AGENT,
 )
 from .models import (
@@ -967,6 +968,18 @@ def _ami_stamp(value: datetime) -> str:
     return value.astimezone(SG_TZ).strftime(AMI_DATE_FORMAT)
 
 
+def _drop_future(
+    periods: tuple[PeriodReading, ...], now: datetime
+) -> tuple[PeriodReading, ...]:
+    """Drop AMI slots that start at or after ``now``.
+
+    The monthly feed pads the rest of the month with zero days. A zero point
+    in the future would sit in Energy statistics with a flat sum until the
+    recorder tries to write that hour itself.
+    """
+    return tuple(item for item in periods if item.start < now)
+
+
 def _parse_ami_rows(body: object) -> tuple[PeriodReading, ...]:
     if not isinstance(body, dict):
         return ()
@@ -1311,11 +1324,21 @@ class SpGroupClient:
         electricity = _parse_utility(charts.get("elec"), "elec")
         water = _parse_utility(charts.get("water"), "water")
         gas = _parse_utility(charts.get("gas"), "gas")
-        if electricity is None and water is None and gas is None:
-            raise UsageError("no billed utilities")
         meter_reading, meter_registers = self._fetch_meter_reading(session, info.id)
         ppms_credit, ppms_updated = self._fetch_ppms(session, info)
         ami_hourly, ami_daily = self._fetch_ami(session, info)
+        if (
+            electricity is None
+            and water is None
+            and gas is None
+            and (ami_hourly or ami_daily)
+        ):
+            # A premise activated days ago has AMI slots before its first bill.
+            electricity = UtilitySeries(
+                total=0.0, unit=UNIT_KWH, periods=(), average=None, comparison=None
+            )
+        if electricity is None and water is None and gas is None:
+            raise UsageError("no billed utilities")
         bills = self._fetch_bills(session, info.account_number)
         last_bill = bills[-1] if bills else None
         amount_due = self._fetch_amount_due(session, info)
@@ -1529,7 +1552,7 @@ class SpGroupClient:
         daily = self._fetch_ami_range(
             session, premise.id, AMI_GROUPED_BY_DAILY, month_start, day_end
         )
-        return hourly, daily
+        return _drop_future(hourly, now), _drop_future(daily, now)
 
     def _fetch_ami_range(
         self,

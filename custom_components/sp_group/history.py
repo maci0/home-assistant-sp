@@ -5,7 +5,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from .const import DOMAIN
 from .models import SG_TZ, BillInfo, PeriodReading
+
+
+def cost_points(
+    points: list[CumulativePoint] | tuple[CumulativePoint, ...], price: float
+) -> list[CumulativePoint]:
+    """Cumulative cost for a fixed unit price, e.g. SGD per kWh."""
+    return [
+        CumulativePoint(
+            start=point.start, cumulative=round(point.cumulative * price, 4)
+        )
+        for point in points
+    ]
+
+
+def external_statistic_id(premise_id: str, key: str) -> str:
+    """Recorder id for imported history, e.g. ``sp_group:2001590888_electricity``.
+
+    Imported history must not share an id with a sensor: the recorder seeds
+    its own running sum from short-term rows only, so a sensor with a
+    ``total_increasing`` state class would get a second, conflicting sum.
+    """
+    return f"{DOMAIN}:{premise_id}_{key}"
 
 
 @dataclass(frozen=True)
