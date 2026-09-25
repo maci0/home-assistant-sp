@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 
 import pytest
 
@@ -12,6 +13,7 @@ from custom_components.sp_group.client import (
     MfaChallenge,
     Session,
     SpGroupClient,
+    _drop_future,
     _mfa_channel_from_challenge,
     _oob_factor_authenticator_id,
     _pick_mfa_factor,
@@ -41,6 +43,7 @@ from custom_components.sp_group.const import (
     OAUTH_TOKEN_PATH,
     USER_AGENT,
 )
+from custom_components.sp_group.models import SG_TZ, PeriodReading
 
 from .conftest import (
     FixtureTransport,
@@ -756,3 +759,17 @@ def test_new_account_without_bills_still_reads_ami() -> None:
     assert usage.ami_hourly
     assert usage.ami_daily
     assert JARVIS_AMI_PATH in {urlparse_path(req.url) for req in transport.requests}
+
+
+def test_drop_future_removes_padded_days() -> None:
+    now = datetime(2026, 9, 21, 21, 50, tzinfo=SG_TZ)
+    periods = (
+        PeriodReading(start=datetime(2026, 9, 20, 0, 0, tzinfo=SG_TZ), amount=4.2),
+        PeriodReading(start=datetime(2026, 9, 21, 0, 0, tzinfo=SG_TZ), amount=2.1),
+        PeriodReading(start=datetime(2026, 9, 22, 0, 0, tzinfo=SG_TZ), amount=0.0),
+        PeriodReading(start=datetime(2026, 9, 30, 0, 0, tzinfo=SG_TZ), amount=0.0),
+    )
+
+    kept = _drop_future(periods, now)
+
+    assert [item.start.day for item in kept] == [20, 21]

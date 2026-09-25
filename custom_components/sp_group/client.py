@@ -968,6 +968,18 @@ def _ami_stamp(value: datetime) -> str:
     return value.astimezone(SG_TZ).strftime(AMI_DATE_FORMAT)
 
 
+def _drop_future(
+    periods: tuple[PeriodReading, ...], now: datetime
+) -> tuple[PeriodReading, ...]:
+    """Drop AMI slots that start at or after ``now``.
+
+    The monthly feed pads the rest of the month with zero days. A zero point
+    in the future would sit in Energy statistics with a flat sum until the
+    recorder tries to write that hour itself.
+    """
+    return tuple(item for item in periods if item.start < now)
+
+
 def _parse_ami_rows(body: object) -> tuple[PeriodReading, ...]:
     if not isinstance(body, dict):
         return ()
@@ -1540,7 +1552,7 @@ class SpGroupClient:
         daily = self._fetch_ami_range(
             session, premise.id, AMI_GROUPED_BY_DAILY, month_start, day_end
         )
-        return hourly, daily
+        return _drop_future(hourly, now), _drop_future(daily, now)
 
     def _fetch_ami_range(
         self,
