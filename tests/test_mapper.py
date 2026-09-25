@@ -104,10 +104,11 @@ def test_sensors_match_energy_dashboard_contract() -> None:
     assert amount_due.device_class == DEVICE_CLASS_MONETARY
     elec_meter = by_key[SENSOR_KEY_ELECTRICITY_METER]
     assert elec_meter.native_value == pytest.approx(14256)
-    assert elec_meter.state_class == STATE_CLASS_MEASUREMENT
+    # A meter register is a running total: HA rejects measurement for energy/water.
+    assert elec_meter.state_class == STATE_CLASS_TOTAL
     water_meter = by_key[SENSOR_KEY_WATER_METER]
     assert water_meter.native_value == pytest.approx(931.4)
-    assert water_meter.state_class == STATE_CLASS_MEASUREMENT
+    assert water_meter.state_class == STATE_CLASS_TOTAL
     goal = by_key[SENSOR_KEY_ELECTRICITY_GOAL]
     assert goal.native_value == pytest.approx(1160.77)
     goal_attrs = extra_attributes(usage, SENSOR_KEY_ELECTRICITY_GOAL)
