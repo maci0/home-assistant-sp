@@ -738,3 +738,21 @@ def urlparse_path(url: str) -> str:
     from urllib.parse import urlparse
 
     return urlparse(url).path
+
+
+def test_new_account_without_bills_still_reads_ami() -> None:
+    """A premise activated days ago has no billed period yet, only AMI slots."""
+    transport = FixtureTransport(charts_fixture="jarvis_charts_new_account.json")
+    client = fixture_client(transport)
+
+    usage = client.fetch_usage()
+
+    assert usage.water is None
+    assert usage.gas is None
+    assert usage.electricity is not None
+    assert usage.electricity.periods == ()
+    assert usage.electricity_kwh == 0.0
+    assert usage.electricity_unit == "kWh"
+    assert usage.ami_hourly
+    assert usage.ami_daily
+    assert JARVIS_AMI_PATH in {urlparse_path(req.url) for req in transport.requests}

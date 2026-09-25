@@ -1,0 +1,25 @@
+{
+  "server_time": "2026-09-21T21:13:27+08:00",
+  "premise_type": "HDB 4-Room Flats",
+  "elec": {
+    "comparison_type": "",
+    "comparison_message_type": "",
+    "comparison_message": "",
+    "average_consumption": 0,
+    "data": []
+  },
+  "gas": {
+    "comparison_type": "",
+    "comparison_message_type": "",
+    "comparison_message": "",
+    "average_consumption": 0,
+    "data": []
+  },
+  "water": {
+    "comparison_type": "",
+    "comparison_message_type": "",
+    "comparison_message": "",
+    "average_consumption": 0,
+    "data": []
+  }
+}

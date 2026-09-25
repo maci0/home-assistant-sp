@@ -77,6 +77,7 @@ from .const import (
     TARIFF_DEFAULT_CONSUMPTION_KWH,
     TOKEN_EXPIRY_BUFFER_SECONDS,
     TYCHE_WALLET_PATH,
+    UNIT_KWH,
     USER_AGENT,
 )
 from .models import (
@@ -1311,11 +1312,21 @@ class SpGroupClient:
         electricity = _parse_utility(charts.get("elec"), "elec")
         water = _parse_utility(charts.get("water"), "water")
         gas = _parse_utility(charts.get("gas"), "gas")
-        if electricity is None and water is None and gas is None:
-            raise UsageError("no billed utilities")
         meter_reading, meter_registers = self._fetch_meter_reading(session, info.id)
         ppms_credit, ppms_updated = self._fetch_ppms(session, info)
         ami_hourly, ami_daily = self._fetch_ami(session, info)
+        if (
+            electricity is None
+            and water is None
+            and gas is None
+            and (ami_hourly or ami_daily)
+        ):
+            # A premise activated days ago has AMI slots before its first bill.
+            electricity = UtilitySeries(
+                total=0.0, unit=UNIT_KWH, periods=(), average=None, comparison=None
+            )
+        if electricity is None and water is None and gas is None:
+            raise UsageError("no billed utilities")
         bills = self._fetch_bills(session, info.account_number)
         last_bill = bills[-1] if bills else None
         amount_due = self._fetch_amount_due(session, info)
