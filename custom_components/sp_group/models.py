@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from .const import UNIT_KWH, UNIT_M3
-
 SG_TZ = timezone(timedelta(hours=8))
 
 
@@ -205,14 +203,6 @@ class UsageReadings:
     @property
     def water_m3(self) -> float:
         return self.water.total if self.water else 0.0
-
-    @property
-    def electricity_unit(self) -> str:
-        return self.electricity.unit if self.electricity else UNIT_KWH
-
-    @property
-    def water_unit(self) -> str:
-        return self.water.unit if self.water else UNIT_M3
 
     @property
     def electricity_periods(self) -> tuple[PeriodReading, ...]:

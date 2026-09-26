@@ -471,8 +471,8 @@ def test_fetch_usage_returns_kwh_and_water_from_charts_fixture() -> None:
 
     assert usage.electricity_kwh == expected_kwh
     assert usage.water_m3 == expected_m3
-    assert usage.electricity_unit == "kWh"
-    assert usage.water_unit == "m³"
+    assert usage.electricity is not None and usage.electricity.unit == "kWh"
+    assert usage.water is not None and usage.water.unit == "m³"
     assert usage.premise_id == premise_id
 
     by_path = {urlparse_path(req.url): req for req in transport.requests}
@@ -643,7 +643,7 @@ def test_new_account_without_bills_still_reads_ami() -> None:
     assert usage.electricity is not None
     assert usage.electricity.periods == ()
     assert usage.electricity_kwh == 0.0
-    assert usage.electricity_unit == "kWh"
+    assert usage.electricity.unit == "kWh"
     assert usage.ami_hourly
     assert usage.ami_daily
     assert JARVIS_AMI_PATH in {urlparse_path(req.url) for req in transport.requests}
