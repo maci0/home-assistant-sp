@@ -5,69 +5,17 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
 from pathlib import Path
-from urllib.parse import urlparse
 
-ROOT = Path(__file__).resolve()
-while ROOT != ROOT.parent:
-    if (ROOT / "pyproject.toml").is_file():
-        break
-    ROOT = ROOT.parent
-else:
-    raise SystemExit("pyproject.toml not found")
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from custom_components.sp_group.client import HttpResponse, SpGroupClient
-from custom_components.sp_group.const import (
-    B2C_HOST,
-    IDENTITY_HOST,
-    JARVIS_CHARTS_PATH,
-    JARVIS_ME_PATH,
-    OAUTH_TOKEN_PATH,
-)
-
-FIXTURES = ROOT / "tests" / "fixtures"
-
-
-class LaunchFixtureTransport:
-    def request(
-        self,
-        method: str,
-        url: str,
-        headers: Mapping[str, str],
-        body: bytes | None,
-        *,
-        timeout: int | None = None,
-    ) -> HttpResponse:
-        parsed = urlparse(url)
-        origin = f"{parsed.scheme}://{parsed.netloc}"
-        path = parsed.path
-        if method == "POST" and origin == IDENTITY_HOST and path == OAUTH_TOKEN_PATH:
-            return HttpResponse(
-                200,
-                (FIXTURES / "oauth_token_success.json").read_bytes(),
-            )
-        if method == "GET" and origin == B2C_HOST and path == JARVIS_ME_PATH:
-            return HttpResponse(
-                200,
-                (FIXTURES / "jarvis_me.json").read_bytes(),
-            )
-        if (
-            method == "GET"
-            and origin == B2C_HOST
-            and path.startswith(f"{JARVIS_CHARTS_PATH}/")
-        ):
-            return HttpResponse(
-                200,
-                (FIXTURES / "jarvis_charts.json").read_bytes(),
-            )
-        # Everything past me/charts is optional; 404 is the client's skip signal.
-        return HttpResponse(404, b"{}")
+from custom_components.sp_group.client import SpGroupClient  # noqa: E402
+from tests.conftest import FixtureTransport  # noqa: E402
 
 
 def main() -> None:
-    client = SpGroupClient(transport=LaunchFixtureTransport())
+    client = SpGroupClient(transport=FixtureTransport())
     client.login("user@example.com", "secret")
     usage = client.fetch_usage()
     print(f"electricity_kwh={usage.electricity_kwh}")

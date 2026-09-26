@@ -60,6 +60,10 @@ CONF_ID_TOKEN = "id_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_MFA_CODE = "mfa_code"
 CONF_ELECTRICITY_PRICE = "electricity_price"
+# The same values as homeassistant.const, so the Home-Assistant-free client
+# layer can build the config entry data dict.
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"
 
 USER_AGENT = "Infinity/15.10.0 (Android)"
 HEADER_ID_TOKEN = "X-id-token"

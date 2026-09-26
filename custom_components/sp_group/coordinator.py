@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .client import AuthError, SpGroupClient, UsageError
+from .client import AuthError, SpGroupClient, UsageError, session_entry_data
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_ELECTRICITY_PRICE,
@@ -54,13 +54,9 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         )
         self.client = client
         self.entry = entry
-        self._platforms_ready = False
         self._stats_lock = asyncio.Lock()
         self._stats_task: asyncio.Task[None] | None = None
         self._imported_price: float | None = None
-
-    def mark_platforms_ready(self) -> None:
-        self._platforms_ready = True
 
     @property
     def electricity_price(self) -> float | None:
@@ -69,6 +65,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         try:
             price = float(raw) if raw is not None else None
         except (TypeError, ValueError):
+            # Options come from the flow as floats, but .storage can be edited.
             return None
         return price if price and price > 0 else None
 
@@ -79,7 +76,6 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
 
     async def async_stop_stats_import(self) -> None:
         """Cancel an import still writing statistics when the entry goes away."""
-        self._platforms_ready = False
         task = self._stats_task
         self._stats_task = None
         if task is None or task.done():
@@ -104,8 +100,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 str(exc), **translated_error("usage_failed", exc)
             ) from exc
         self._persist_session_if_changed()
-        if self._platforms_ready:
-            self._schedule_stats_import()
+        self._schedule_stats_import()
         return usage
 
     def _persist_session_if_changed(self) -> None:
@@ -121,14 +116,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             and stored_refresh == refresh
         ):
             return
-        payload = {
-            CONF_USERNAME: data[CONF_USERNAME],
-            CONF_PASSWORD: data[CONF_PASSWORD],
-            CONF_ACCESS_TOKEN: session.access_token,
-            CONF_ID_TOKEN: session.id_token,
-        }
-        if session.refresh_token:
-            payload[CONF_REFRESH_TOKEN] = session.refresh_token
+        payload = session_entry_data(session, data[CONF_USERNAME], data[CONF_PASSWORD])
         self.hass.config_entries.async_update_entry(self.entry, data=payload)
 
     def _schedule_stats_import(self) -> None:
@@ -150,9 +138,14 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             except Exception:
                 _LOGGER.exception("failed to import billed statistics")
 
-    def _history_series(
-        self, usage: UsageReadings
-    ) -> list[tuple[str, tuple, str, str]]:
+    async def _async_import_billed_history(self, usage: UsageReadings) -> None:
+        from homeassistant.components.recorder.models.statistics import (
+            StatisticMeanType,
+        )
+        from homeassistant.components.recorder.statistics import (
+            async_add_external_statistics,
+        )
+
         series: list[tuple[str, tuple, str, str]] = []
         if usage.electricity is not None:
             periods = electricity_graph_periods(usage)
@@ -173,17 +166,8 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                     "energy" if usage.gas.unit == UNIT_KWH else "volume",
                 )
             )
-        return series
 
-    async def _async_import_billed_history(self, usage: UsageReadings) -> None:
-        from homeassistant.components.recorder.models.statistics import (
-            StatisticMeanType,
-        )
-        from homeassistant.components.recorder.statistics import (
-            async_add_external_statistics,
-        )
-
-        for key, periods, unit, unit_class in self._history_series(usage):
+        for key, periods, unit, unit_class in series:
             points = cumulative_points(periods)
             if not points:
                 continue

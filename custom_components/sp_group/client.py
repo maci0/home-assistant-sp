@@ -20,10 +20,9 @@ import math
 import ssl
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from http.client import HTTPException
-from typing import Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -49,6 +48,11 @@ from .const import (
     AUTH_REJECT_STATUSES,
     B2C_HOST,
     BILL_PREFERENCES_PATH,
+    CONF_ACCESS_TOKEN,
+    CONF_ID_TOKEN,
+    CONF_PASSWORD,
+    CONF_REFRESH_TOKEN,
+    CONF_USERNAME,
     CONTENT_TYPE_JSON,
     ERROR_VALUE_CHARS,
     EVA_CHARGE_HISTORY_PATH,
@@ -148,18 +152,6 @@ class HttpResponse:
     body: bytes
 
 
-class Transport(Protocol):
-    def request(
-        self,
-        method: str,
-        url: str,
-        headers: Mapping[str, str],
-        body: bytes | None,
-        *,
-        timeout: int | None = None,
-    ) -> HttpResponse: ...
-
-
 class UrllibTransport:
     def request(
         self,
@@ -183,8 +175,7 @@ class UrllibTransport:
             # URLError, socket timeout, and TLS failures all land here. Name the
             # call and the timeout so the log says which host stalled the poll.
             raise TransportError(
-                f"{method} {url.split('?', 1)[0]} failed"
-                f" (timeout {seconds}s): {exc}"
+                f"{method} {url.split('?', 1)[0]} failed (timeout {seconds}s): {exc}"
             ) from exc
 
 
@@ -196,11 +187,10 @@ class Session:
     scope: str | None
     expires_at: int | None = None
 
-    def is_expired(self, now: int | None = None) -> bool:
+    def is_expired(self) -> bool:
         if self.expires_at is None:
             return False
-        current = int(time.time() if now is None else now)
-        return current >= self.expires_at - TOKEN_EXPIRY_BUFFER_SECONDS
+        return int(time.time()) >= self.expires_at - TOKEN_EXPIRY_BUFFER_SECONDS
 
 
 def _decode_json(body: bytes) -> object:
@@ -242,14 +232,19 @@ def _eva_scope_denied(response: HttpResponse) -> bool:
     return error == "scope_not_found" or "scope_not_found" in description
 
 
-def _eva_integer_sgd(number: int) -> float | None:
-    """Integers at or above the threshold are cents; smaller ones are dollars."""
-    dollars = _optional_float(number)
-    if dollars is None:
+def _cents_to_sgd(value: object, *, cents_min: int | None = None) -> float | None:
+    """Parse a money field as cents, or None when it is not a finite number.
+
+    ``cents_min`` is the magnitude at or above which a value is cents; without
+    it every value is cents. Eva integer amounts below the threshold are whole
+    dollars, not cents.
+    """
+    number = _optional_float(value)
+    if number is None:
         return None
-    if abs(number) >= EVA_INTEGER_CENTS_MIN:
-        return round(dollars / 100.0, 2)
-    return dollars
+    if cents_min is not None and abs(number) < cents_min:
+        return number
+    return round(number / 100.0, 2)
 
 
 def _eva_sgd(value: object) -> float | None:
@@ -259,12 +254,12 @@ def _eva_sgd(value: object) -> float | None:
     if isinstance(value, float):
         return round(value, 2) if math.isfinite(value) else None
     if isinstance(value, int):
-        return _eva_integer_sgd(value)
+        return _cents_to_sgd(value, cents_min=EVA_INTEGER_CENTS_MIN)
     if isinstance(value, str) and value.strip():
         text = value.strip()
         if "." not in text:
             try:
-                return _eva_integer_sgd(int(text))
+                return _cents_to_sgd(int(text), cents_min=EVA_INTEGER_CENTS_MIN)
             except ValueError:
                 pass
         dollars = _optional_float(text)
@@ -330,13 +325,6 @@ def _optional_bool(value: object) -> bool | None:
     return None
 
 
-def _cents_to_sgd(value: object) -> float | None:
-    cents = _optional_float(value)
-    if cents is None:
-        return None
-    return round(cents / 100.0, 2)
-
-
 def _account_digits(value: str | None) -> str:
     if not value:
         return ""
@@ -378,6 +366,21 @@ def _session_from_oauth(
         scope=scope if isinstance(scope, str) else None,
         expires_at=_jwt_exp(access_token),
     )
+
+
+def session_entry_data(
+    session: Session, username: str, password: str
+) -> dict[str, str]:
+    """The config entry data for a session: credentials plus its tokens."""
+    data = {
+        CONF_USERNAME: username,
+        CONF_PASSWORD: password,
+        CONF_ACCESS_TOKEN: session.access_token,
+        CONF_ID_TOKEN: session.id_token,
+    }
+    if session.refresh_token:
+        data[CONF_REFRESH_TOKEN] = session.refresh_token
+    return data
 
 
 def _oauth_headers() -> dict[str, str]:
@@ -459,32 +462,25 @@ def _mfa_channel_from_challenge(
     return "oob", challenge.oob_code
 
 
-def _normalize_volume_unit(unit: str) -> str:
-    compact = unit.replace(" ", "").lower()
-    if compact in {"m3", "m³", "cum", "cu.m", "cbm"}:
-        return "m³"
-    return unit or "m³"
-
-
 def _energy_or_volume_unit(unit: str, kind: str) -> str:
     compact = unit.replace(" ", "").lower()
+    volume = "m³" if compact in {"m3", "m³", "cum", "cu.m", "cbm"} else (unit or "m³")
     if kind == "elec":
         if unit and compact not in {"kwh", "kw·h"}:
             raise UsageError(f"unexpected electricity unit {unit!r}")
         return "kWh"
     if kind == "water":
-        return _normalize_volume_unit(unit)
+        return volume
     if compact in {"kwh", "kw·h"}:
         return "kWh"
-    return _normalize_volume_unit(unit)
+    return volume
 
 
 def _parse_period_start(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
-    text = value.replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     if parsed.tzinfo is None:
@@ -658,7 +654,7 @@ def _parse_green_goals(body: object, premise_id: str) -> tuple[GreenGoal, ...]:
             continue
         unit = _optional_str(row.get("unit")) or ("kWh" if kind == "elec" else "m³")
         if kind == "water":
-            unit = _normalize_volume_unit(unit)
+            unit = _energy_or_volume_unit(unit, "water")
         cost_cents = _optional_float(matched.get("cost_difference_in_cents"))
         goals.append(
             GreenGoal(
@@ -1007,7 +1003,7 @@ def _parse_ami_rows(body: object) -> tuple[PeriodReading, ...]:
 class SpGroupClient:
     def __init__(
         self,
-        transport: Transport | None = None,
+        transport: UrllibTransport | None = None,
         session: Session | None = None,
     ) -> None:
         self._transport = transport or UrllibTransport()
@@ -1060,28 +1056,9 @@ class SpGroupClient:
         """
         headers = _oauth_headers()
         headers["Authorization"] = f"Bearer {mfa_token}"
-        response = self._transport.request(
-            method,
-            f"{AUTH0_MFA_OAUTH_HOST}{path}",
-            headers,
-            json.dumps(body).encode("utf-8") if body is not None else None,
-            timeout=HTTP_TIMEOUT_SECONDS,
+        return self._post_json(
+            AUTH0_MFA_OAUTH_HOST, path, headers, body, method=method, label="mfa"
         )
-        url = f"{AUTH0_MFA_OAUTH_HOST}{path}"
-        if response.status >= 400 and response.status not in AUTH_REJECT_STATUSES:
-            # 429 or 5xx is Auth0 being unavailable, not a factor problem.
-            raise TransportError(f"{method} {url} returned HTTP {response.status}")
-        parsed = _require_json(response, "mfa")
-        if response.status >= 400:
-            detail = parsed if isinstance(parsed, dict) else {}
-            error = str(detail.get("error") or detail.get("code") or "invalid_grant")
-            description = str(
-                detail.get("error_description")
-                or detail.get("description")
-                or "authentication failed"
-            )
-            raise AuthError(error, description)
-        return parsed
 
     def list_mfa_authenticators(self, mfa_token: str) -> tuple[dict[str, object], ...]:
         """List the enrolled Auth0 MFA factors for an in-progress login."""
@@ -1203,35 +1180,58 @@ class SpGroupClient:
                 ) from exc
         raise AuthError("invalid_grant", "login credentials required")
 
-    def _oauth_post(self, payload: dict[str, str]) -> dict[str, object]:
+    def _post_json(
+        self,
+        host: str,
+        path: str,
+        headers: Mapping[str, str],
+        payload: dict[str, str] | None,
+        *,
+        method: str = "POST",
+        label: str,
+    ) -> object:
+        """Send a JSON body to an Auth0 host and return the parsed response.
+
+        A 429 or 5xx is Auth0 being unavailable, not a bad password or a factor
+        problem, so it raises TransportError instead of AuthError: reporting it
+        as an auth failure would push the user into a pointless reauth.
+        """
+        url = f"{host}{path}"
         response = self._transport.request(
-            "POST",
-            f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}",
-            _oauth_headers(),
-            json.dumps(payload).encode("utf-8"),
+            method,
+            url,
+            headers,
+            json.dumps(payload).encode("utf-8") if payload is not None else None,
             timeout=HTTP_TIMEOUT_SECONDS,
         )
-        url = f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
         if response.status >= 400 and response.status not in AUTH_REJECT_STATUSES:
-            # 429 or 5xx is Auth0 being unavailable, not a bad password. Reporting
-            # it as an auth failure would push the user into a pointless reauth.
-            raise TransportError(f"POST {url} returned HTTP {response.status}")
-        body = _require_json(response, "oauth token")
-        mapping = body if isinstance(body, dict) else {}
-        if response.status >= 400:
-            error = str(mapping.get("error") or mapping.get("code") or "invalid_grant")
-            description = str(
-                mapping.get("error_description")
-                or mapping.get("description")
-                or "authentication failed"
-            )
-            mfa_token = mapping.get("mfa_token")
-            raise AuthError(
-                error,
-                description,
-                mfa_token=mfa_token if isinstance(mfa_token, str) else None,
-            )
-        return mapping
+            raise TransportError(f"{method} {url} returned HTTP {response.status}")
+        parsed = _require_json(response, label)
+        if response.status < 400:
+            return parsed
+        detail = parsed if isinstance(parsed, dict) else {}
+        error = str(detail.get("error") or detail.get("code") or "invalid_grant")
+        description = str(
+            detail.get("error_description")
+            or detail.get("description")
+            or "authentication failed"
+        )
+        mfa_token = detail.get("mfa_token")
+        raise AuthError(
+            error,
+            description,
+            mfa_token=mfa_token if isinstance(mfa_token, str) else None,
+        )
+
+    def _oauth_post(self, payload: dict[str, str]) -> dict[str, object]:
+        body = self._post_json(
+            IDENTITY_HOST,
+            OAUTH_TOKEN_PATH,
+            _oauth_headers(),
+            payload,
+            label="oauth token",
+        )
+        return body if isinstance(body, dict) else {}
 
     def fetch_usage(self) -> UsageReadings:
         session = self.ensure_session()
@@ -1344,7 +1344,7 @@ class SpGroupClient:
         amount_due = self._fetch_amount_due(session, info)
         green_goals = self._fetch_green_goals(session, info.id)
         extras = self._fetch_optional(session, info, electricity)
-        return UsageReadings(
+        base = UsageReadings(
             premise=info,
             electricity=electricity,
             water=water,
@@ -1359,16 +1359,9 @@ class SpGroupClient:
             amount_due=amount_due,
             meter_registers=meter_registers,
             green_goals=green_goals,
-            greenup=extras.greenup,
-            ev_wallet=extras.ev_wallet,
-            ev_session=extras.ev_session,
-            ev_last_charge=extras.ev_last_charge,
-            ev_unpaid=extras.ev_unpaid,
-            unread_notifications=extras.unread_notifications,
-            bill_delivery=extras.bill_delivery,
-            fcus=extras.fcus,
-            tariff=extras.tariff,
         )
+        # OptionalReads names the same fields, so copy them without restating.
+        return replace(base, **vars(extras))
 
     def _fetch_meter_reading(
         self, session: Session, premise_id: str

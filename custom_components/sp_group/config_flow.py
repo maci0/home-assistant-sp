@@ -11,15 +11,8 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 
-from .client import AuthError, SpGroupClient, UsageError
-from .const import (
-    CONF_ACCESS_TOKEN,
-    CONF_ELECTRICITY_PRICE,
-    CONF_ID_TOKEN,
-    CONF_MFA_CODE,
-    CONF_REFRESH_TOKEN,
-    DOMAIN,
-)
+from .client import AuthError, SpGroupClient, UsageError, session_entry_data
+from .const import CONF_ELECTRICITY_PRICE, CONF_MFA_CODE, DOMAIN
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -33,62 +26,27 @@ def _entry_data(client: SpGroupClient, username: str, password: str) -> dict[str
     session = client.session
     if session is None:
         raise UsageError("session missing after login")
-    data = {
-        CONF_USERNAME: username,
-        CONF_PASSWORD: password,
-        CONF_ACCESS_TOKEN: session.access_token,
-        CONF_ID_TOKEN: session.id_token,
-    }
-    if session.refresh_token:
-        data[CONF_REFRESH_TOKEN] = session.refresh_token
-    return data
+    return session_entry_data(session, username, password)
 
 
 async def _validate(
-    hass: HomeAssistant, username: str, password: str
+    hass: HomeAssistant,
+    username: str,
+    password: str,
+    method: str | None = None,
+    *args: str,
 ) -> dict[str, str]:
+    """Log in (or finish an MFA exchange) and read usage, in one executor job."""
     client = SpGroupClient()
 
     def _login_and_fetch() -> None:
-        client.login(username, password)
+        if method is None:
+            client.login(username, password)
+        else:
+            getattr(client, method)(*args)
         client.fetch_usage()
 
     await hass.async_add_executor_job(_login_and_fetch)
-    return _entry_data(client, username, password)
-
-
-async def _validate_mfa(
-    hass: HomeAssistant,
-    username: str,
-    password: str,
-    mfa_token: str,
-    otp: str,
-) -> dict[str, str]:
-    client = SpGroupClient()
-
-    def _submit_and_fetch() -> None:
-        client.submit_mfa(mfa_token, otp)
-        client.fetch_usage()
-
-    await hass.async_add_executor_job(_submit_and_fetch)
-    return _entry_data(client, username, password)
-
-
-async def _validate_mfa_oob(
-    hass: HomeAssistant,
-    username: str,
-    password: str,
-    mfa_token: str,
-    oob_code: str,
-    binding_code: str,
-) -> dict[str, str]:
-    client = SpGroupClient()
-
-    def _submit_and_fetch() -> None:
-        client.submit_mfa_oob(mfa_token, oob_code, binding_code)
-        client.fetch_usage()
-
-    await hass.async_add_executor_job(_submit_and_fetch)
     return _entry_data(client, username, password)
 
 
@@ -107,11 +65,11 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
-            options = dict(self.config_entry.options)
             price = user_input.get(CONF_ELECTRICITY_PRICE)
             if price:
-                options[CONF_ELECTRICITY_PRICE] = float(price)
+                options = {**self.config_entry.options, CONF_ELECTRICITY_PRICE: price}
             else:
+                options = dict(self.config_entry.options)
                 options.pop(CONF_ELECTRICITY_PRICE, None)
             return self.async_create_entry(title="", data=options)
         current = self.config_entry.options.get(CONF_ELECTRICITY_PRICE)
@@ -186,19 +144,21 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             context = self._mfa_context
             try:
                 if context.get("mfa_channel") == "oob":
-                    data = await _validate_mfa_oob(
+                    data = await _validate(
                         self.hass,
                         context[CONF_USERNAME],
                         context[CONF_PASSWORD],
+                        "submit_mfa_oob",
                         context["mfa_token"],
                         context["mfa_oob_code"],
                         user_input[CONF_MFA_CODE],
                     )
                 else:
-                    data = await _validate_mfa(
+                    data = await _validate(
                         self.hass,
                         context[CONF_USERNAME],
                         context[CONF_PASSWORD],
+                        "submit_mfa",
                         context["mfa_token"],
                         user_input[CONF_MFA_CODE],
                     )
@@ -248,52 +208,37 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> config_entries.ConfigFlowResult:
-        return await self.async_step_reauth_confirm()
+        return await self._credentials_step(
+            self._get_reauth_entry(), "reauth_confirm", "reauth"
+        )
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        errors: dict[str, str] = {}
-        reauth_entry = self._get_reauth_entry()
-        if user_input is not None:
-            try:
-                data = await _validate(
-                    self.hass,
-                    user_input[CONF_USERNAME],
-                    user_input[CONF_PASSWORD],
-                )
-            except AuthError as exc:
-                mfa = await self._start_mfa(exc, user_input, "reauth", reauth_entry)
-                if mfa is not None:
-                    return mfa
-                errors["base"] = _auth_error_key(exc)
-            except (UsageError, OSError):
-                errors["base"] = "cannot_connect"
-            else:
-                await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
-                self._abort_if_unique_id_mismatch()
-                return self.async_update_reload_and_abort(
-                    reauth_entry, data_updates=data
-                )
-        return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_USERNAME,
-                        default=reauth_entry.data.get(CONF_USERNAME, ""),
-                    ): str,
-                    vol.Required(CONF_PASSWORD): str,
-                }
-            ),
-            errors=errors,
+        return await self._credentials_step(
+            self._get_reauth_entry(), "reauth_confirm", "reauth", user_input
         )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
+        return await self._credentials_step(
+            self._get_reconfigure_entry(), "reconfigure", "reconfigure", user_input
+        )
+
+    async def _credentials_step(
+        self,
+        entry: config_entries.ConfigEntry,
+        step_id: str,
+        mode: str,
+        user_input: dict[str, Any] | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Ask for the credentials again and update the entry on success.
+
+        The reauth and the reconfigure flow ask the same question and differ
+        only in which entry they update and the mode the MFA step resumes in.
+        """
         errors: dict[str, str] = {}
-        entry = self._get_reconfigure_entry()
         if user_input is not None:
             try:
                 data = await _validate(
@@ -302,7 +247,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_PASSWORD],
                 )
             except AuthError as exc:
-                mfa = await self._start_mfa(exc, user_input, "reconfigure", entry)
+                mfa = await self._start_mfa(exc, user_input, mode, entry)
                 if mfa is not None:
                     return mfa
                 errors["base"] = _auth_error_key(exc)
@@ -313,7 +258,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_mismatch()
                 return self.async_update_reload_and_abort(entry, data_updates=data)
         return self.async_show_form(
-            step_id="reconfigure",
+            step_id=step_id,
             data_schema=vol.Schema(
                 {
                     vol.Required(

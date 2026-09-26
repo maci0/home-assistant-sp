@@ -171,20 +171,5 @@ seed and round that produced it; paste an offending payload into a case in
 
 ### Modules
 
-`custom_components/sp_group/`, listed in dependency order. Each module may import
-those above it, never those below.
-
-| Module | Holds |
-|---|---|
-| `const.py` | Hosts, API paths, Auth0 parameters, sensor keys, units |
-| `models.py` | Frozen dataclasses for premise, usage, bills, meters, EV, FCU |
-| `history.py` | Period arithmetic: fold, trim, merge, cumulative, monthly |
-| `mapper.py` | Usage readings to sensor specs and entity attributes |
-| `client.py` | Auth0 login, MFA, refresh, HTTP transport, JSON to models |
-| `coordinator.py` | 30-minute poll, session persistence, statistics import |
-| `entity.py` `sensor.py` `config_flow.py` `diagnostics.py` | Home Assistant surfaces |
-
-`const.py` through `client.py` import no Home Assistant code and are what the
-tests cover; `mypy --strict` gates them via `[tool.mypy] files`. The package
-`__init__.py` imports Home Assistant inside `async_setup_entry` so the modules
-above stay importable without it.
+`custom_components/sp_group/` is layered; `tests/test_layering.py` holds the
+allowed import graph and enforces it.

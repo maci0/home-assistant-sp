@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +64,8 @@ class FixtureTransport:
     charts_fixture: str = "jarvis_charts.json"
     me_fixture: str = "jarvis_me.json"
     smrd_fixture: str | None = "jarvis_smrd.json"
+    # Exact responses to force for one path, checked before normal routing.
+    responses: dict[str, HttpResponse] = field(default_factory=dict)
     requests: list[RecordedRequest] = field(default_factory=list)
 
     def request(
@@ -86,9 +89,9 @@ class FixtureTransport:
         parsed = urlparse(url)
         origin = f"{parsed.scheme}://{parsed.netloc}"
         path = parsed.path
+        if path in self.responses:
+            return self.responses[path]
         if method == "POST" and origin == IDENTITY_HOST and path == OAUTH_TOKEN_PATH:
-            import json
-
             request_body = json.loads(body.decode("utf-8")) if body else {}
             if (self.require_mfa or self.mfa_oob) and request_body.get(
                 "grant_type"
@@ -138,8 +141,6 @@ class FixtureTransport:
             and origin == AUTH0_MFA_OAUTH_HOST
             and path == AUTH0_MFA_CHALLENGE_PATH
         ):
-            import json
-
             challenge = {
                 "challenge_type": "oob",
                 "oob_code": "oob-code",
@@ -177,8 +178,6 @@ class FixtureTransport:
         if method == "POST" and origin == B2C_HOST and path == JARVIS_AMI_PATH:
             grouped = "day"
             if body:
-                import json
-
                 payload = json.loads(body.decode("utf-8"))
                 grouped = str(payload.get("grouped_by") or "day")
             name = (

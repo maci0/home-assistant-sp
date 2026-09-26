@@ -100,12 +100,8 @@ def _omit_none(attrs: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in attrs.items() if value is not None}
 
 
-def reported_ami_slots(usage: UsageReadings) -> tuple[PeriodReading, ...]:
-    return trim_unreported(usage.ami_hourly)
-
-
 def electricity_graph_periods(usage: UsageReadings) -> tuple[PeriodReading, ...]:
-    hourly = fold_half_hours(reported_ami_slots(usage))
+    hourly = fold_half_hours(trim_unreported(usage.ami_hourly))
     merged = merge_ami_periods(usage.ami_daily, hourly)
     if merged:
         return merged
@@ -113,7 +109,7 @@ def electricity_graph_periods(usage: UsageReadings) -> tuple[PeriodReading, ...]
 
 
 def _today_kwh(usage: UsageReadings) -> float | None:
-    slots = reported_ami_slots(usage)
+    slots = trim_unreported(usage.ami_hourly)
     if not slots:
         return None
     today = datetime.now(SG_TZ).date()
@@ -123,7 +119,7 @@ def _today_kwh(usage: UsageReadings) -> float | None:
 
 
 def _last_interval(usage: UsageReadings) -> PeriodReading | None:
-    slots = reported_ami_slots(usage)
+    slots = trim_unreported(usage.ami_hourly)
     if not slots:
         return None
     return max(slots, key=lambda item: item.start)

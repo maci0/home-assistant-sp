@@ -7,13 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve()
-while ROOT != ROOT.parent:
-    if (ROOT / "pyproject.toml").is_file():
-        break
-    ROOT = ROOT.parent
-else:
-    raise SystemExit("pyproject.toml not found")
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from custom_components.sp_group.client import (  # noqa: E402

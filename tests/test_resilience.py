@@ -90,33 +90,12 @@ def test_tariff_host_failure_leaves_tariff_unset() -> None:
     assert usage.tariff is None
 
 
-class StatusTransport(FixtureTransport):
-    """Fixture transport that overrides the status of one path."""
-
-    def __init__(self, path: str, status: int, body: bytes) -> None:
-        super().__init__()
-        self.forced_path = path
-        self.status = status
-        self.forced_body = body
-
-    def request(
-        self,
-        method: str,
-        url: str,
-        headers: Mapping[str, str],
-        body: bytes | None,
-        *,
-        timeout: int | None = None,
-    ) -> HttpResponse:
-        if urlparse(url).path == self.forced_path:
-            return HttpResponse(status=self.status, body=self.forced_body)
-        return super().request(method, url, headers, body, timeout=timeout)
-
-
 def test_identity_host_outage_is_not_reported_as_bad_credentials() -> None:
     """A 5xx from Auth0 must not push Home Assistant into a reauth flow."""
     client = SpGroupClient(
-        transport=StatusTransport(OAUTH_TOKEN_PATH, 503, b"<html>gateway</html>")
+        transport=FixtureTransport(
+            responses={OAUTH_TOKEN_PATH: HttpResponse(503, b"<html>gateway</html>")}
+        )
     )
     with pytest.raises(TransportError) as raised:
         client.login("user@example.com", "secret")
@@ -125,7 +104,9 @@ def test_identity_host_outage_is_not_reported_as_bad_credentials() -> None:
 
 def test_rate_limited_login_is_not_reported_as_bad_credentials() -> None:
     client = SpGroupClient(
-        transport=StatusTransport(OAUTH_TOKEN_PATH, 429, b'{"error":"too_many"}')
+        transport=FixtureTransport(
+            responses={OAUTH_TOKEN_PATH: HttpResponse(429, b'{"error":"too_many"}')}
+        )
     )
     with pytest.raises(TransportError):
         client.login("user@example.com", "secret")
@@ -139,7 +120,9 @@ def test_rejected_credentials_still_raise_auth_error() -> None:
 
 def test_non_json_body_on_required_read_reports_the_path() -> None:
     client = fixture_client(
-        StatusTransport(JARVIS_ME_PATH, 200, b"<html>maintenance</html>")
+        FixtureTransport(
+            responses={JARVIS_ME_PATH: HttpResponse(200, b"<html>maintenance</html>")}
+        )
     )
     with pytest.raises(UsageError) as raised:
         client.fetch_usage()
@@ -149,10 +132,14 @@ def test_non_json_body_on_required_read_reports_the_path() -> None:
 def test_refresh_failure_keeps_the_reason() -> None:
     """The Auth0 verdict must survive into the error the user is shown."""
     client = SpGroupClient(
-        transport=StatusTransport(
-            OAUTH_TOKEN_PATH,
-            403,
-            b'{"error":"invalid_grant","error_description":"refresh token revoked"}',
+        transport=FixtureTransport(
+            responses={
+                OAUTH_TOKEN_PATH: HttpResponse(
+                    403,
+                    b'{"error":"invalid_grant",'
+                    b'"error_description":"refresh token revoked"}',
+                )
+            }
         ),
         session=Session(
             access_token="stale",

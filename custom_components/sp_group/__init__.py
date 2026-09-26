@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .const import DOMAIN, translated_error
+from .const import translated_error
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -23,8 +23,6 @@ if TYPE_CHECKING:
     type SpGroupConfigEntry = ConfigEntry[SpGroupCoordinator]
 
 PLATFORMS = ["sensor"]
-
-__all__ = ["DOMAIN", "PLATFORMS"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> bool:
@@ -66,7 +64,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> b
     entry.runtime_data = coordinator
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    coordinator.mark_platforms_ready()
     await coordinator.async_import_billed_history()
     return True
 

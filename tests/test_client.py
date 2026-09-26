@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 
 import pytest
 
 from custom_components.sp_group.client import (
     AuthError,
+    HttpResponse,
     MfaChallenge,
     Session,
     SpGroupClient,
@@ -198,195 +200,6 @@ def test_list_mfa_authenticators_parses_bare_array_response() -> None:
     assert sms["type"] == "phone"
 
 
-def test_pick_mfa_factor_sms_only() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "sms|dev_abc123",
-                "authenticator_type": "oob",
-                "oob_channel": "sms",
-                "type": "phone",
-            },
-            {
-                "id": "recovery-code|dev_abc123",
-                "authenticator_type": "recovery-code",
-                "active": True,
-                "type": "recovery-code",
-            },
-        )
-    )
-    assert factor is not None
-    assert factor["oob_channel"] == "sms"
-    assert factor["authenticator_type"] == "oob"
-
-
-def test_pick_mfa_factor_email_only() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "email|dev_abc123",
-                "authenticator_type": "oob",
-                "oob_channel": "email",
-                "active": True,
-                "type": "email",
-            },
-        )
-    )
-    assert factor is not None
-    assert factor["oob_channel"] == "email"
-
-
-def test_pick_mfa_factor_prefers_sms_over_email() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "email|dev_abc123",
-                "authenticator_type": "oob",
-                "oob_channel": "email",
-                "active": True,
-                "type": "email",
-            },
-            {
-                "id": "sms|dev_abc123",
-                "authenticator_type": "oob",
-                "oob_channel": "sms",
-                "active": True,
-                "type": "phone",
-            },
-        )
-    )
-    assert factor is not None
-    assert factor["oob_channel"] == "sms"
-
-
-def test_pick_mfa_factor_prefers_totp_over_sms() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "sms|dev_abc123",
-                "authenticator_type": "oob",
-                "oob_channel": "sms",
-                "active": True,
-                "type": "phone",
-            },
-            {
-                "id": "totp|dev_abc123",
-                "authenticator_type": "otp",
-                "active": True,
-                "type": "totp",
-            },
-        )
-    )
-    assert factor is not None
-    assert factor["authenticator_type"] == "otp"
-    assert factor["id"] == "totp|dev_abc123"
-
-
-def test_pick_mfa_factor_totp_blank_id_falls_through_to_sms() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "",
-                "authenticator_type": "otp",
-                "active": True,
-                "type": "totp",
-            },
-            {
-                "id": "sms|dev_abc123",
-                "authenticator_type": "oob",
-                "oob_channel": "sms",
-                "active": True,
-                "type": "phone",
-            },
-        )
-    )
-    assert factor is not None
-    assert factor["authenticator_type"] == "oob"
-    assert factor["oob_channel"] == "sms"
-
-
-def test_pick_mfa_factor_prefers_totp_literal_over_sms() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "sms|dev_abc123",
-                "authenticator_type": "oob",
-                "oob_channel": "sms",
-                "active": True,
-                "type": "phone",
-            },
-            {
-                "id": "totp|dev_abc123",
-                "authenticator_type": "totp",
-                "active": True,
-                "type": "totp",
-            },
-        )
-    )
-    assert factor is not None
-    assert factor["authenticator_type"] == "totp"
-    assert factor["id"] == "totp|dev_abc123"
-
-
-def test_pick_mfa_factor_otp_only_returns_otp_factor() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "totp|dev_abc123",
-                "authenticator_type": "otp",
-                "active": True,
-                "type": "totp",
-            },
-            {
-                "id": "recovery-code|dev_abc123",
-                "authenticator_type": "recovery-code",
-                "active": True,
-                "type": "recovery-code",
-            },
-        )
-    )
-    assert factor is not None
-    assert factor["authenticator_type"] == "otp"
-    assert factor["id"] == "totp|dev_abc123"
-
-
-def test_pick_mfa_factor_recovery_code_only_is_not_a_factor() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "recovery-code|dev_abc123",
-                "authenticator_type": "recovery-code",
-                "active": True,
-                "type": "recovery-code",
-            },
-        )
-    )
-    assert factor is None
-
-
-def test_pick_mfa_factor_skips_inactive_sms() -> None:
-    factor = _pick_mfa_factor(
-        (
-            {
-                "id": "sms|dev_inactive",
-                "authenticator_type": "oob",
-                "oob_channel": "sms",
-                "active": False,
-                "type": "phone",
-            },
-            {
-                "id": "email|dev_abc123",
-                "authenticator_type": "oob",
-                "oob_channel": "email",
-                "active": True,
-                "type": "email",
-            },
-        )
-    )
-    assert factor is not None
-    assert factor["oob_channel"] == "email"
-
-
 def _oob_sms_factor() -> dict[str, object]:
     return {
         "id": "sms|dev_abc123",
@@ -394,6 +207,16 @@ def _oob_sms_factor() -> dict[str, object]:
         "oob_channel": "sms",
         "active": True,
         "type": "phone",
+    }
+
+
+def _oob_email_factor() -> dict[str, object]:
+    return {
+        "id": "email|dev_abc123",
+        "authenticator_type": "oob",
+        "oob_channel": "email",
+        "active": True,
+        "type": "email",
     }
 
 
@@ -406,6 +229,34 @@ def _totp_factor() -> dict[str, object]:
     }
 
 
+def _totp_literal_factor() -> dict[str, object]:
+    return {
+        "id": "totp|dev_abc123",
+        "authenticator_type": "totp",
+        "active": True,
+        "type": "totp",
+    }
+
+
+def _blank_id_totp_factor() -> dict[str, object]:
+    return {
+        "id": "",
+        "authenticator_type": "otp",
+        "active": True,
+        "type": "totp",
+    }
+
+
+def _inactive_sms_factor() -> dict[str, object]:
+    return {
+        "id": "sms|dev_inactive",
+        "authenticator_type": "oob",
+        "oob_channel": "sms",
+        "active": False,
+        "type": "phone",
+    }
+
+
 def _recovery_factor() -> dict[str, object]:
     return {
         "id": "recovery-code|dev_abc123",
@@ -413,6 +264,65 @@ def _recovery_factor() -> dict[str, object]:
         "active": True,
         "type": "recovery-code",
     }
+
+
+@pytest.mark.parametrize(
+    ("factors", "expected"),
+    [
+        pytest.param(
+            (_oob_sms_factor(), _recovery_factor()),
+            {"oob_channel": "sms", "authenticator_type": "oob"},
+            id="sms-only",
+        ),
+        pytest.param(
+            (_oob_email_factor(),),
+            {"oob_channel": "email"},
+            id="email-only",
+        ),
+        pytest.param(
+            (_oob_email_factor(), _oob_sms_factor()),
+            {"oob_channel": "sms"},
+            id="prefers-sms-over-email",
+        ),
+        pytest.param(
+            (_oob_sms_factor(), _totp_factor()),
+            {"authenticator_type": "otp", "id": "totp|dev_abc123"},
+            id="prefers-totp-over-sms",
+        ),
+        pytest.param(
+            (_blank_id_totp_factor(), _oob_sms_factor()),
+            {"authenticator_type": "oob", "oob_channel": "sms"},
+            id="blank-id-totp-falls-through-to-sms",
+        ),
+        pytest.param(
+            (_oob_sms_factor(), _totp_literal_factor()),
+            {"authenticator_type": "totp", "id": "totp|dev_abc123"},
+            id="prefers-totp-literal-over-sms",
+        ),
+        pytest.param(
+            (_totp_factor(), _recovery_factor()),
+            {"authenticator_type": "otp", "id": "totp|dev_abc123"},
+            id="otp-only",
+        ),
+        pytest.param((_recovery_factor(),), None, id="recovery-code-only"),
+        pytest.param(
+            (_inactive_sms_factor(), _oob_email_factor()),
+            {"oob_channel": "email"},
+            id="skips-inactive-sms",
+        ),
+    ],
+)
+def test_pick_mfa_factor(
+    factors: tuple[dict[str, object], ...],
+    expected: dict[str, object] | None,
+) -> None:
+    factor = _pick_mfa_factor(factors)
+    if expected is None:
+        assert factor is None
+        return
+    assert factor is not None
+    for key, value in expected.items():
+        assert factor[key] == value
 
 
 def test_oob_factor_authenticator_id_extracts_oob_id() -> None:
@@ -650,29 +560,15 @@ def test_fetch_usage_returns_kwh_and_water_from_charts_fixture() -> None:
 
 
 def test_me_forbidden_uses_server_error_description() -> None:
-    class ForbiddenMeTransport(FixtureTransport):
-        def request(
-            self,
-            method: str,
-            url: str,
-            headers: dict[str, str],
-            body: bytes | None,
-            *,
-            timeout: int | None = None,
-        ):
-            from urllib.parse import urlparse
-
-            from custom_components.sp_group.client import HttpResponse
-
-            parsed = urlparse(url)
-            if method == "GET" and parsed.path == JARVIS_ME_PATH:
-                return HttpResponse(
-                    403,
-                    b'{"error":"invalid_claim","error_description":"claim error"}',
-                )
-            return super().request(method, url, headers, body, timeout=timeout)
-
-    client = fixture_client(ForbiddenMeTransport())
+    transport = FixtureTransport(
+        responses={
+            JARVIS_ME_PATH: HttpResponse(
+                403,
+                b'{"error":"invalid_claim","error_description":"claim error"}',
+            )
+        }
+    )
+    client = fixture_client(transport)
     with pytest.raises(AuthError) as exc_info:
         client.fetch_usage()
     assert exc_info.value.error == "invalid_claim"
@@ -715,31 +611,23 @@ def test_gas_only_charts_return_gas_series() -> None:
 
 
 def test_amount_due_credit_is_negative_sgd() -> None:
-    class CreditTransport(FixtureTransport):
-        def request(self, method, url, headers, body, *, timeout=None):
-            from urllib.parse import urlparse
-
-            from custom_components.sp_group.client import HttpResponse
-
-            parsed = urlparse(url)
-            if method == "GET" and parsed.path == NJORD_PAYABLES_PATH:
-                return HttpResponse(
-                    200,
-                    b'{"payables":[{"account_number":"1234567890","currency":"SGD",'
-                    b'"amount":-29631,"premises_id":"premise-001","system":"EBS",'
-                    b'"recurring_enabled":false,"giro_enabled":false,'
-                    b'"is_owner":true}]}',
-                )
-            return super().request(method, url, headers, body, timeout=timeout)
-
-    usage = fixture_client(CreditTransport()).fetch_usage()
+    transport = FixtureTransport(
+        responses={
+            NJORD_PAYABLES_PATH: HttpResponse(
+                200,
+                b'{"payables":[{"account_number":"1234567890","currency":"SGD",'
+                b'"amount":-29631,"premises_id":"premise-001","system":"EBS",'
+                b'"recurring_enabled":false,"giro_enabled":false,'
+                b'"is_owner":true}]}',
+            )
+        }
+    )
+    usage = fixture_client(transport).fetch_usage()
     assert usage.amount_due is not None
     assert usage.amount_due.amount_sgd == pytest.approx(-296.31)
 
 
 def urlparse_path(url: str) -> str:
-    from urllib.parse import urlparse
-
     return urlparse(url).path
 
 

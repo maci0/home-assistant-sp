@@ -41,7 +41,6 @@ async def async_get_config_entry_diagnostics(
         "water_periods": len(usage.water_periods),
         "gas_periods": len(usage.gas_periods),
         "has_meter_reading": usage.meter_reading is not None,
-        "has_last_bill": usage.last_bill is not None,
         "bill_count": len(usage.bills),
         "has_amount_due": usage.amount_due is not None,
         "meter_register_count": len(usage.meter_registers),
@@ -53,7 +52,6 @@ async def async_get_config_entry_diagnostics(
         "has_ev_unpaid": usage.ev_unpaid is not None,
         "has_unread_notifications": usage.unread_notifications is not None,
         "has_bill_delivery": usage.bill_delivery is not None,
-        "has_fcu": bool(usage.fcus),
         "fcu_count": len(usage.fcus),
         "has_tariff": usage.tariff is not None,
     }

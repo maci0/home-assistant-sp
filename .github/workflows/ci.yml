@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
 
 jobs:
@@ -13,6 +13,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --extra dev --frozen
       - run: uv run ruff check custom_components tests
-      - run: uv run black --check custom_components tests
+      - run: uv run ruff format --check custom_components tests
       - run: uv run pytest
       - run: uv run mypy

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import parse_qs, urlparse
 
 from custom_components.sp_group.client import (
+    HttpResponse,
     _eva_sgd,
     _parse_bill_delivery,
     _parse_ev_last_charge,
@@ -34,61 +36,53 @@ from .conftest import FixtureTransport, fixture_client
 
 
 def test_greenup_and_unread_appear_when_payloads_exist() -> None:
-    class ExtraTransport(FixtureTransport):
-        def request(self, method, url, headers, body, *, timeout=None):
-            from urllib.parse import urlparse
-
-            from custom_components.sp_group.client import HttpResponse
-
-            parsed = urlparse(url)
-            if method == "POST" and parsed.path == "/1up/authenticated/graphql":
-                return HttpResponse(
-                    200,
-                    json.dumps(
-                        {
-                            "data": {
-                                "account": {
-                                    "node": {
-                                        "totalPoints": 12,
-                                        "projectedLevelStatus": "MAINTAIN",
-                                        "tier": {
-                                            "node": {
-                                                "level": 1,
-                                                "name": "Sprout",
-                                                "pointsToLevelUp": 150,
-                                            }
-                                        },
-                                    }
+    transport = FixtureTransport(
+        responses={
+            "/1up/authenticated/graphql": HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "data": {
+                            "account": {
+                                "node": {
+                                    "totalPoints": 12,
+                                    "projectedLevelStatus": "MAINTAIN",
+                                    "tier": {
+                                        "node": {
+                                            "level": 1,
+                                            "name": "Sprout",
+                                            "pointsToLevelUp": 150,
+                                        }
+                                    },
                                 }
                             }
                         }
-                    ).encode(),
-                )
-            if method == "GET" and parsed.path == "/notifications/v1/notifications":
-                return HttpResponse(
-                    200,
-                    b'{"total_unread_notifications": 3}',
-                )
-            if method == "GET" and parsed.path == "/eva/v2/order/receipts":
-                return HttpResponse(
-                    200,
-                    json.dumps(
-                        {
-                            "data": [
-                                {
-                                    "total_consumption": 18.5,
-                                    "transaction_amount": 12.3,
-                                    "created_at": "2026-08-01T10:00:00+08:00",
-                                    "transaction_status": "COMPLETED",
-                                    "address": "Example Hub",
-                                }
-                            ]
-                        }
-                    ).encode(),
-                )
-            return super().request(method, url, headers, body, timeout=timeout)
-
-    usage = fixture_client(ExtraTransport()).fetch_usage()
+                    }
+                ).encode(),
+            ),
+            "/notifications/v1/notifications": HttpResponse(
+                200,
+                b'{"total_unread_notifications": 3}',
+            ),
+            "/eva/v2/order/receipts": HttpResponse(
+                200,
+                json.dumps(
+                    {
+                        "data": [
+                            {
+                                "total_consumption": 18.5,
+                                "transaction_amount": 12.3,
+                                "created_at": "2026-08-01T10:00:00+08:00",
+                                "transaction_status": "COMPLETED",
+                                "address": "Example Hub",
+                            }
+                        ]
+                    }
+                ).encode(),
+            ),
+        }
+    )
+    usage = fixture_client(transport).fetch_usage()
     assert usage.greenup is not None
     assert usage.greenup.points == 12
     assert usage.unread_notifications == 3
@@ -133,26 +127,20 @@ def test_eva_sgd_string_rules() -> None:
 
 
 def test_eva_scope_not_found_skips_remaining_eva() -> None:
-    class DeniedEva(FixtureTransport):
-        def request(self, method, url, headers, body, *, timeout=None):
-            from urllib.parse import urlparse
-
-            from custom_components.sp_group.client import HttpResponse
-
-            parsed = urlparse(url)
-            if parsed.path.startswith("/eva/"):
-                if parsed.path == EVA_LATEST_SESSION_PATH:
-                    return HttpResponse(
-                        403,
-                        b'{"error":"scope_not_found"}',
-                    )
-                raise AssertionError(f"eva call after deny: {parsed.path}")
-            return super().request(method, url, headers, body, timeout=timeout)
-
-    usage = fixture_client(DeniedEva()).fetch_usage()
+    transport = FixtureTransport(
+        responses={
+            EVA_LATEST_SESSION_PATH: HttpResponse(403, b'{"error":"scope_not_found"}')
+        }
+    )
+    usage = fixture_client(transport).fetch_usage()
     assert usage.ev_session is None
     assert usage.ev_last_charge is None
     assert usage.ev_unpaid is None
+    # A denied scope must not send the remaining EVA reads.
+    eva_paths = [urlparse(req.url).path for req in transport.requests]
+    assert [path for path in eva_paths if path.startswith("/eva/")] == [
+        EVA_LATEST_SESSION_PATH
+    ]
 
 
 def test_optional_calls_use_short_timeout() -> None:
@@ -172,10 +160,6 @@ def test_optional_calls_use_short_timeout() -> None:
 def test_paired_fcus_each_get_a_sensor() -> None:
     class TwoFcu(FixtureTransport):
         def request(self, method, url, headers, body, *, timeout=None):
-            from urllib.parse import parse_qs, urlparse
-
-            from custom_components.sp_group.client import HttpResponse
-
             parsed = urlparse(url)
             if method == "POST" and parsed.path == "/frosty/graphql":
                 return HttpResponse(
