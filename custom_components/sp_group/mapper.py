@@ -606,3 +606,23 @@ def sensors_from_usage(usage: UsageReadings | None) -> list[SensorSpec]:
             )
         )
     return specs
+
+
+class SensorSpecCache:
+    """Build the sensor specs once per ``UsageReadings``, not once per entity.
+
+    Every entity reads the spec list on each coordinator update. The list walks
+    the whole AMI window, so building it per entity costs one fold-and-merge of
+    ~1,900 period rows per entity per poll. The coordinator holds one cache;
+    a new ``UsageReadings`` object (a new poll) invalidates it.
+    """
+
+    def __init__(self) -> None:
+        self._usage: UsageReadings | None = None
+        self._specs: list[SensorSpec] = []
+
+    def specs(self, usage: UsageReadings | None) -> list[SensorSpec]:
+        if usage is not self._usage:
+            self._usage = usage
+            self._specs = sensors_from_usage(usage)
+        return self._specs

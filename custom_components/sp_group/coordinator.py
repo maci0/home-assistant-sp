@@ -36,7 +36,7 @@ from .history import (
     external_statistic_id,
     monthly_bill_points,
 )
-from .mapper import electricity_graph_periods
+from .mapper import SensorSpec, SensorSpecCache, electricity_graph_periods
 from .models import UsageReadings
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,6 +57,12 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         self._stats_lock = asyncio.Lock()
         self._stats_task: asyncio.Task[None] | None = None
         self._imported_price: float | None = None
+        self._spec_cache = SensorSpecCache()
+
+    @property
+    def sensor_specs(self) -> list[SensorSpec]:
+        """The current sensor specs, built once per poll for every entity."""
+        return self._spec_cache.specs(self.data)
 
     @property
     def electricity_price(self) -> float | None:

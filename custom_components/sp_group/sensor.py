@@ -20,7 +20,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ATTRIBUTION, DOMAIN
 from .coordinator import SpGroupCoordinator
-from .mapper import SensorSpec, extra_attributes, sensors_from_usage
+from .mapper import SensorSpec, extra_attributes
 
 PARALLEL_UPDATES = 0
 
@@ -41,7 +41,7 @@ async def async_setup_entry(
 
     @callback
     def _async_add_new() -> None:
-        specs = sensors_from_usage(coordinator.data)
+        specs = coordinator.sensor_specs
         fresh = [spec for spec in specs if spec.key not in known]
         if not fresh:
             return
@@ -97,11 +97,7 @@ class SpGroupSensor(CoordinatorEntity[SpGroupCoordinator], SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         spec = next(
-            (
-                item
-                for item in sensors_from_usage(self.coordinator.data)
-                if item.key == self._key
-            ),
+            (item for item in self.coordinator.sensor_specs if item.key == self._key),
             None,
         )
         if spec is None:
