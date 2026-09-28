@@ -81,7 +81,7 @@ wheels = [
 
 [[package]]
 name = "home-assistant-sp"
-version = "1.6.2"
+version = "1.7.0"
 source = { virtual = "." }
 
 [package.optional-dependencies]
