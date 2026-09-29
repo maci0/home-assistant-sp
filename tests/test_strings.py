@@ -116,6 +116,7 @@ def _raised_exception_keys() -> set[str]:
                 and node.func.id == "translated_error"
                 and node.args
                 and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
             ):
                 keys.add(node.args[0].value)
     return keys

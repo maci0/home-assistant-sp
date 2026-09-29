@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
+import pytest
+
 from custom_components.sp_group import mapper
 from custom_components.sp_group.client import HttpResponse
 from custom_components.sp_group.const import (
@@ -21,7 +23,7 @@ from custom_components.sp_group.const import (
     JARVIS_AMI_PATH,
     JARVIS_SMRD_PATH,
 )
-from custom_components.sp_group.mapper import SensorSpecCache
+from custom_components.sp_group.mapper import SensorSpec, SensorSpecCache
 from custom_components.sp_group.models import (
     SG_TZ,
     PeriodReading,
@@ -71,14 +73,14 @@ def _usage() -> UsageReadings:
     )
 
 
-def test_specs_built_once_per_usage(monkeypatch) -> None:
+def test_specs_built_once_per_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     """One build covers every entity read until a new poll replaces the data."""
     builds: list[UsageReadings | None] = []
     real = mapper.sensors_from_usage
 
     def counting_sensors_from_usage(
         usage: UsageReadings | None, now: datetime
-    ) -> list[mapper.SensorSpec]:
+    ) -> list[SensorSpec]:
         builds.append(usage)
         return real(usage, now)
 

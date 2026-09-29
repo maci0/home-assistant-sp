@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from urllib.parse import parse_qs, urlparse
 
 from custom_components.sp_group.client import (
@@ -180,7 +181,15 @@ def test_optional_calls_use_short_timeout() -> None:
 
 def test_paired_fcus_each_get_a_sensor() -> None:
     class TwoFcu(FixtureTransport):
-        def request(self, method, url, headers, body, *, timeout=None):
+        def request(
+            self,
+            method: str,
+            url: str,
+            headers: Mapping[str, str],
+            body: bytes | None,
+            *,
+            timeout: int | None = None,
+        ) -> HttpResponse:
             parsed = urlparse(url)
             if method == "POST" and parsed.path == "/frosty/graphql":
                 return HttpResponse(

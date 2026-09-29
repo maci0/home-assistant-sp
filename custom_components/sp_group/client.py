@@ -359,7 +359,7 @@ def _tariff_consumption(electricity: UtilitySeries | None) -> str:
     if electricity is None or not electricity.periods:
         return str(TARIFF_DEFAULT_CONSUMPTION_KWH)
     last = max(electricity.periods, key=lambda item: item.start)
-    kwh = int(round(last.amount))
+    kwh = round(last.amount)
     if kwh <= 0:
         return str(TARIFF_DEFAULT_CONSUMPTION_KWH)
     return str(kwh)

@@ -8,6 +8,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable, Mapping
+from email.message import Message
 from io import BytesIO
 from ssl import SSLError
 from urllib.error import HTTPError, URLError
@@ -203,7 +204,9 @@ def test_urllib_transport_names_the_call_it_could_not_make(
 def test_urllib_transport_keeps_http_error_bodies() -> None:
     """A 4xx is a response, not a transport failure: the body must survive."""
     url = f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
-    error = HTTPError(url, 403, "Forbidden", {}, BytesIO(b'{"error":"invalid_grant"}'))
+    error = HTTPError(
+        url, 403, "Forbidden", Message(), BytesIO(b'{"error":"invalid_grant"}')
+    )
 
     def _raise(*args: object, **kwargs: object) -> object:
         raise error

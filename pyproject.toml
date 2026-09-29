@@ -24,22 +24,45 @@ line-length = 88
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+select = [
+    "A",   # builtin shadowing
+    "B",   # bugbear
+    "C4",  # comprehensions
+    "DTZ", # naive datetimes
+    "ERA", # commented-out code
+    "E",
+    "F",
+    "FA",  # future annotations
+    "G",   # logging format
+    "I",
+    "ICN", # import aliases
+    "INT", # gettext
+    "ISC", # implicit string concat
+    "LOG", # logging misuse
+    "N",   # pep8 naming
+    "PD",  # pandas
+    "PERF",
+    "PIE",
+    "PTH", # pathlib
+    "Q",   # quotes
+    "RET", # returns
+    "RUF",
+    "TID", # tidy imports
+    "UP",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/*.py" = ["E402"]
+# The fuzz corpus is ambiguous digits on purpose: they are what the parser must survive.
+"tests/test_fuzz.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 files = [
-    "custom_components/sp_group/client.py",
-    "custom_components/sp_group/mapper.py",
-    "custom_components/sp_group/const.py",
-    "custom_components/sp_group/history.py",
-    "custom_components/sp_group/models.py",
-    "scripts/launch_client.py",
-    "scripts/live_api.py",
+    "custom_components",
+    "scripts",
+    "tests",
 ]
 
 [[tool.mypy.overrides]]

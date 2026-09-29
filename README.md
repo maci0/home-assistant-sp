@@ -172,7 +172,6 @@ uv run ruff check custom_components tests scripts
 uv run ruff format --check custom_components tests scripts
 uv run mypy
 uv run pytest
-uv run mypy
 uv run python scripts/launch_client.py
 ```
 

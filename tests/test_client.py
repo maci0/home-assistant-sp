@@ -12,7 +12,6 @@ import pytest
 from custom_components.sp_group.client import (
     AuthError,
     HttpResponse,
-    MfaChallenge,
     Session,
     SpGroupClient,
     UsageError,
@@ -49,7 +48,7 @@ from custom_components.sp_group.const import (
     OAUTH_TOKEN_PATH,
     USER_AGENT,
 )
-from custom_components.sp_group.models import SG_TZ, PeriodReading
+from custom_components.sp_group.models import SG_TZ, MfaChallenge, PeriodReading
 
 from .conftest import (
     FixedClock,
@@ -392,6 +391,7 @@ def test_challenge_mfa_rejects_non_prompt_binding_method() -> None:
     with pytest.raises(AuthError) as raised:
         client.login("user@example.com", "secret")
     mfa_token = raised.value.mfa_token
+    assert mfa_token is not None
 
     with pytest.raises(AuthError) as exc_info:
         client.challenge_mfa(mfa_token, "sms|dev_abc123")

@@ -139,7 +139,7 @@ def _drop(node: Any, path: tuple[object, ...]) -> Any:
         if isinstance(node, list) and isinstance(head, int) and head < len(node):
             return [item for index, item in enumerate(node) if index != head]
         return node
-    return _replace(node, (head,), _drop(node[head], rest))  # type: ignore[index]
+    return _replace(node, (head,), _drop(node[head], rest))
 
 
 def mutate(seed: Any, rng: random.Random) -> Any:

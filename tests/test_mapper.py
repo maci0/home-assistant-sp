@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -66,7 +67,7 @@ from .conftest import (
 )
 
 
-def _usage_with(**overrides: object) -> UsageReadings:
+def _usage_with(**overrides: Any) -> UsageReadings:
     """A real fixture poll with the named fields swapped, for optional branches."""
     return replace(fixture_client().fetch_usage(), **overrides)
 
@@ -196,6 +197,7 @@ def test_empty_api_status_falls_back_to_the_translated_unknown_state() -> None:
 def test_amount_due_carries_the_payable_currency() -> None:
     """A USD payable is labelled USD on the entity, not hard-coded SGD."""
     usage = _usage_with()
+    assert usage.amount_due is not None
     due = replace(usage.amount_due, currency="usd")
     usage = replace(usage, amount_due=due)
 
