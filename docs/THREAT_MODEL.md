@@ -75,8 +75,8 @@ size (R2) but both are type-checked at every field
    long-term statistics, which any HA user with database access can query.
 5. **Repository to the operator's install.** HACS distributes this code
    (`hacs.json`), and CI runs untrusted pull-request code with
-   `uv sync --extra dev --frozen` (`.github/workflows/ci.yml:14`). The
-   component has no runtime third-party dependencies (`pyproject.toml:7`),
+   `uv sync --extra dev --locked` (`.github/workflows/ci.yml:32`). The
+   component has no runtime third-party dependencies (`pyproject.toml:9`),
    so the supply chain is the integration files themselves.
 
 Privilege transitions: none inside this component. It runs with the

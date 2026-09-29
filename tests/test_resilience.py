@@ -554,7 +554,7 @@ def test_the_cooldown_expires_and_a_good_password_then_signs_in(
     assert blocked.value.error == "too_many_attempts"
 
     later = time.monotonic() + LOGIN_RETRY_COOLDOWN_SECONDS
-    monkeypatch.setattr(client_module.time, "monotonic", lambda: later)
+    monkeypatch.setattr(time, "monotonic", lambda: later)
     SpGroupClient(transport=FixtureTransport()).login("u@example.com", "b")
     assert _login_cooldown("u@example.com") == 0
 

@@ -267,9 +267,7 @@ def test_tariff_consumption_rounds_half_up_not_to_even() -> None:
             UtilitySeries(
                 total=amount,
                 unit="kWh",
-                periods=(
-                    PeriodReading(start=FIXED_NOW, amount=amount),
-                ),
+                periods=(PeriodReading(start=FIXED_NOW, amount=amount),),
                 average=None,
                 comparison=None,
             )
@@ -344,7 +342,15 @@ def test_a_long_paired_fcu_list_is_read_up_to_the_cap() -> None:
     class ManyFcus(FixtureTransport):
         status_reads = 0
 
-        def request(self, method, url, headers, body, *, timeout=None):
+        def request(
+            self,
+            method: str,
+            url: str,
+            headers: Mapping[str, str],
+            body: bytes | None,
+            *,
+            timeout: int | None = None,
+        ) -> HttpResponse:
             parsed = urlparse(url)
             if method == "POST" and parsed.path == "/frosty/graphql":
                 return HttpResponse(
