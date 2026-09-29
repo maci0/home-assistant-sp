@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from custom_components.sp_group.client import _parse_ami_rows, _parse_period_start
 from custom_components.sp_group.history import (
     CumulativePoint,
     cost_points,
@@ -279,3 +280,22 @@ def test_unimported_works_for_bill_periods() -> None:
 
     assert unimported(bills, month) == []
     assert unimported(bills, None) == bills
+
+
+def test_a_timestamp_with_no_utc_form_is_dropped_before_the_folds() -> None:
+    """A naive stamp at the very start of the datetime range has no UTC form.
+
+    It reads as SGT, so the SGT shift succeeds and the parser used to hand it
+    on. Every recorder series then shifted the other way, and the shift raised
+    OverflowError inside cumulative_points, which aborted the whole statistics
+    import rather than skipping the one unusable slot.
+    """
+    unshiftable = "0001-01-01T00:00:00"
+    body = {"history": [{"data": [{"date": unshiftable, "consumption": 1.5}]}]}
+
+    periods = _parse_ami_rows(body)
+
+    assert periods == ()
+    assert list(cumulative_points(periods)) == []
+    # The last day of the range is the mirror case: it has no SGT form.
+    assert _parse_period_start("9999-12-31T23:59:59-08:00") is None

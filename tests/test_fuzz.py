@@ -26,7 +26,7 @@ import os
 import random
 from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -166,10 +166,15 @@ def check_invariants(value: object, where: str) -> None:
         return
     if isinstance(value, datetime):
         assert value.tzinfo is not None, f"{where}: naive datetime {value!r}"
-        try:
-            value.astimezone(SG_TZ)
-        except (OverflowError, OSError) as exc:
-            raise AssertionError(f"{where}: {value!r} has no SGT form: {exc}") from exc
+        # Both directions, because the folds run in both: the AMI day merges
+        # go to SGT and the recorder series go to UTC.
+        for zone, label in ((SG_TZ, "SGT"), (UTC, "UTC")):
+            try:
+                value.astimezone(zone)
+            except (OverflowError, OSError) as exc:
+                raise AssertionError(
+                    f"{where}: {value!r} has no {label} form: {exc}"
+                ) from exc
         return
     if isinstance(value, Mapping):
         for key, item in value.items():

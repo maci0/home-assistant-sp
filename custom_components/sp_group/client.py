@@ -775,9 +775,15 @@ def _parse_period_start(value: object) -> datetime | None:
         parsed = parsed.replace(tzinfo=SG_TZ)
     try:
         parsed.astimezone(SG_TZ)
+        parsed.astimezone(UTC)
     except (OverflowError, OSError):
-        # Timestamps within a UTC offset of datetime.min/max cannot be shifted
-        # to SGT, and every downstream fold does exactly that.
+        # A timestamp within an offset of datetime.min or datetime.max has no
+        # instant outside its own end of the range, so one of the two shifts
+        # overflows. The folds run in both directions: the AMI half-hour and
+        # day merges go to SGT, and the recorder series go to UTC. Guarding
+        # only SGT let a naive "0001-01-01T00:00:00", which has no UTC form,
+        # through to cumulative_points, where it aborted the whole statistics
+        # import as an OverflowError the caller never saw.
         return None
     return parsed
 
