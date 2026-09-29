@@ -21,7 +21,7 @@ import ssl
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import cache
 from http.client import HTTPException
 from typing import Protocol, TypeGuard
@@ -963,7 +963,7 @@ def _parse_bills(body: object) -> tuple[BillInfo, ...]:
     history = body.get("history")
     if not isinstance(history, list):
         return ()
-    bills: list[tuple[str, BillInfo]] = []
+    bills: list[tuple[datetime, BillInfo]] = []
     for row in history:
         if not isinstance(row, dict):
             continue
@@ -978,18 +978,25 @@ def _parse_bills(body: object) -> tuple[BillInfo, ...]:
         date = _optional_str(bill.get("date"))
         period = _optional_str(bill.get("period"))
         created = _optional_str(row.get("created_at"))
+        issued_at = (
+            _parse_period_start(date)
+            or _parse_period_start(period)
+            or _parse_period_start(created)
+        )
         info = BillInfo(
             amount_sgd=amount,
             date=date,
             period=period,
             due_date=_optional_str(bill.get("due_date")),
             account_number=_optional_str(bill.get("account_number")),
-            issued_at=_parse_period_start(date)
-            or _parse_period_start(period)
-            or _parse_period_start(created),
+            issued_at=issued_at,
         )
-        stamp = created or date or ""
-        bills.append((stamp, info))
+        # Order by the instant, never by the timestamp text: Njord returns
+        # ``Z`` for some rows and ``+08:00`` for others, and a lexicographic
+        # sort puts a 09:00+08:00 bill after a 20:00Z bill of the same day
+        # even though the first was issued hours earlier. Sorting text made
+        # the wrong bill the latest one and miscredited monthly statistics.
+        bills.append((issued_at or datetime.min.replace(tzinfo=UTC), info))
     bills.sort(key=lambda item: item[0])
     return tuple(info for _, info in bills)
 

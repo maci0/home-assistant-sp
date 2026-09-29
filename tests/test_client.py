@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import codecs
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
@@ -19,6 +19,7 @@ from custom_components.sp_group.client import (
     _drop_future,
     _mfa_channel_from_challenge,
     _oob_factor_authenticator_id,
+    _parse_bills,
     _pick_mfa_factor,
     _ssl_context,
 )
@@ -831,3 +832,34 @@ def test_charts_with_a_byte_order_mark_and_a_non_breaking_space_unit() -> None:
     assert usage.electricity is not None
     assert usage.electricity.unit == "kWh"
     assert usage.electricity_kwh == pytest.approx(352.456)
+
+
+def test_bills_order_by_instant_not_by_timestamp_text() -> None:
+    """Njord mixes ``Z`` and ``+08:00`` offsets; text order is not time order."""
+    body = {
+        "history": [
+            {
+                "type": "bill",
+                "created_at": "2026-08-09T01:00:00+08:00",
+                "bill": {
+                    "date": "2026-08-09T01:00:00+08:00",
+                    "amount": 32326,
+                },
+            },
+            {
+                "type": "bill",
+                "created_at": "2026-08-08T20:00:00Z",
+                "bill": {"date": "2026-08-08T20:00:00Z", "amount": 20369},
+            },
+        ]
+    }
+
+    bills = _parse_bills(body)
+
+    # 2026-08-08T20:00Z is 2026-08-09T04:00 SGT, so it is the later bill even
+    # though its text sorts first.
+    assert [bill.amount_sgd for bill in bills] == [
+        pytest.approx(323.26),
+        pytest.approx(203.69),
+    ]
+    assert bills[-1].issued_at == datetime(2026, 8, 8, 20, tzinfo=UTC)
