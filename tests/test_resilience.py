@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import ssl
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from email.message import Message
 from io import BytesIO
 from ssl import SSLError
@@ -490,10 +489,14 @@ def test_urllib_transport_builds_one_tls_context() -> None:
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(client_module, "urlopen", _ok)
-        patch.setattr(client_module, "_ssl_context", _cached(_counting))
-        transport = UrllibTransport()
-        transport.request("GET", "https://example.invalid/a", {}, None)
-        transport.request("GET", "https://example.invalid/b", {}, None)
+        patch.setattr(ssl, "create_default_context", _counting)
+        client_module._ssl_context.cache_clear()
+        try:
+            transport = UrllibTransport()
+            transport.request("GET", "https://example.invalid/a", {}, None)
+            transport.request("GET", "https://example.invalid/b", {}, None)
+        finally:
+            client_module._ssl_context.cache_clear()
 
     assert len(built) == 1, "the second request rebuilt the CA context"
 
@@ -513,10 +516,6 @@ class _Response:
 
     def __exit__(self, *exc: object) -> None:
         return None
-
-
-def _cached(factory: Callable[[], ssl.SSLContext]) -> Callable[[], ssl.SSLContext]:
-    return functools.lru_cache(maxsize=None)(factory)
 
 
 def test_urllib_transport_refuses_an_oversized_body() -> None:

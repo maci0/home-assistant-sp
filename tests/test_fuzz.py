@@ -368,7 +368,8 @@ def test_fuzz_optional_parser_holds_its_contract(
     label: str, seed: object, parser: Callable[[object], object]
 ) -> None:
     """Optional payloads still fail the poll when they crash: _fetch_optional
-    only catches transport failures, not a parse that raises."""
+    only catches transport failures, not a parse that raises.
+    """
     run_fuzz(label, seed, parser)
 
 

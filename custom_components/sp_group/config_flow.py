@@ -28,13 +28,12 @@ from .const import (
 MAX_USERNAME_CHARS = 254
 MAX_PASSWORD_CHARS = 1024
 
+_USERNAME_VALIDATOR = vol.All(str, vol.Length(min=1, max=MAX_USERNAME_CHARS))
+_PASSWORD_VALIDATOR = vol.All(str, vol.Length(min=1, max=MAX_PASSWORD_CHARS))
+
 _CREDENTIALS = {
-    vol.Required(CONF_USERNAME): vol.All(
-        str, vol.Length(min=1, max=MAX_USERNAME_CHARS)
-    ),
-    vol.Required(CONF_PASSWORD): vol.All(
-        str, vol.Length(min=1, max=MAX_PASSWORD_CHARS)
-    ),
+    vol.Required(CONF_USERNAME): _USERNAME_VALIDATOR,
+    vol.Required(CONF_PASSWORD): _PASSWORD_VALIDATOR,
 }
 
 STEP_USER_DATA_SCHEMA = vol.Schema(dict(_CREDENTIALS))
@@ -298,7 +297,7 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
                     vol.Required(
                         CONF_USERNAME,
                         default=entry.data.get(CONF_USERNAME, ""),
-                    ): vol.All(str, vol.Length(min=1, max=MAX_USERNAME_CHARS)),
+                    ): _USERNAME_VALIDATOR,
                 }
             ),
             errors=errors,

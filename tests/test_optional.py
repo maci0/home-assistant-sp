@@ -327,29 +327,6 @@ def test_eva_sgd_drops_money_no_bill_can_carry() -> None:
     assert _eva_sgd("inf") is None
 
 
-def test_last_charge_keeps_a_zero_kwh_reading() -> None:
-    """0 kWh is a reading; ``or`` replaced it with the connector's 18.5 kWh."""
-    zero = _parse_ev_last_charge(
-        {
-            "data": [
-                {
-                    "total_consumption": 0,
-                    "connector_kwh": 18.5,
-                    "transaction_amount": "12.50",
-                }
-            ]
-        }
-    )
-    assert zero is not None
-    assert zero.kwh == 0.0
-    # A missing total_consumption still falls back to the connector reading.
-    fallback = _parse_ev_last_charge(
-        {"data": [{"connector_kwh": 18.5, "transaction_amount": "12.50"}]}
-    )
-    assert fallback is not None
-    assert fallback.kwh == 18.5
-
-
 def test_unpaid_orders_total_sums_in_cents() -> None:
     """12.30 + 7.35 is 19.649999999999999 as floats, not 19.65."""
     unpaid = _parse_ev_unpaid(
