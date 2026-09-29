@@ -36,6 +36,7 @@ from .const import (
     AMI_GROUPED_BY_DAILY,
     AMI_GROUPED_BY_HALF_HOUR,
     AMI_HALF_HOUR_DAYS,
+    API_PATHS,
     AUTH0_AUDIENCE,
     AUTH0_CLIENT_ID,
     AUTH0_GRANT_TYPE,
@@ -181,6 +182,32 @@ def _ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+_LITERAL_PATH_SEGMENTS = frozenset(
+    segment for path in API_PATHS for segment in path.split("/") if segment
+)
+IDENTIFIER_SEGMENT = "{id}"
+
+
+def _loggable_url(url: str) -> str:
+    """The host and the route, with the account-shaped parts taken out.
+
+    Error messages reach the Home Assistant log and the user-facing reauth
+    text, so the query string (account number, thing name, consumption) and
+    every path segment that is not a fixed route are dropped: those are the
+    premise id, account number, and order id.
+    """
+    without_query, _, _ = url.partition("?")
+    scheme, separator, rest = without_query.partition("://")
+    host, _, path = rest.partition("/")
+    segments = [
+        segment if segment in _LITERAL_PATH_SEGMENTS else IDENTIFIER_SEGMENT
+        for segment in path.split("/")
+        if segment
+    ]
+    root = f"{scheme}{separator}{host}" if separator else host
+    return "/".join([root, *segments]) if segments else root
+
+
 class UrllibTransport:
     def request(
         self,
@@ -203,7 +230,7 @@ class UrllibTransport:
             # URLError, socket timeout, and TLS failures all land here. Name the
             # call and the timeout so the log says which host stalled the poll.
             raise TransportError(
-                f"{method} {url.split('?', 1)[0]} failed (timeout {seconds}s): {exc}"
+                f"{method} {_loggable_url(url)} failed (timeout {seconds}s): {exc}"
             ) from exc
 
 
@@ -1253,7 +1280,9 @@ class SpGroupClient:
             timeout=HTTP_TIMEOUT_SECONDS,
         )
         if response.status >= 400 and response.status not in AUTH_REJECT_STATUSES:
-            raise TransportError(f"{method} {url} returned HTTP {response.status}")
+            raise TransportError(
+                f"{method} {_loggable_url(url)} returned HTTP {response.status}"
+            )
         parsed = _require_json(response, label)
         if response.status < 400:
             return parsed

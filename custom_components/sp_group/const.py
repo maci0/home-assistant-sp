@@ -56,6 +56,32 @@ AUTH0_MFA_AUTHENTICATORS_PATH = "/mfa/authenticators"
 AUTH0_MFA_CHALLENGE_PATH = "/mfa/challenge"
 AUTH0_REFRESH_GRANT = "refresh_token"
 AUTH0_REALM = "Username-Password-Authentication"
+
+# Every protocol path, so a caller can tell a fixed route segment from a
+# per-account identifier appended to it (premise id, account number, order id).
+API_PATHS = (
+    OAUTH_TOKEN_PATH,
+    JARVIS_ME_PATH,
+    JARVIS_CHARTS_PATH,
+    JARVIS_PPMS_PATH,
+    JARVIS_SMRD_PATH,
+    JARVIS_AMI_PATH,
+    JARVIS_GREEN_GOALS_PATH,
+    NJORD_PAYABLES_PATH,
+    NJORD_HISTORY_PATH,
+    GREENUP_GRAPHQL_PATH,
+    TYCHE_WALLET_PATH,
+    EVA_LATEST_SESSION_PATH,
+    EVA_CHARGE_HISTORY_PATH,
+    EVA_UNPAID_PATH,
+    NOTIFICATIONS_PATH,
+    BILL_PREFERENCES_PATH,
+    FROSTY_GRAPHQL_PATH,
+    FROSTY_FCU_STATUS_PATH,
+    PRICEPLAN_PATH,
+    AUTH0_MFA_AUTHENTICATORS_PATH,
+    AUTH0_MFA_CHALLENGE_PATH,
+)
 TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
 CONF_ACCESS_TOKEN = "access_token"

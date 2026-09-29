@@ -22,12 +22,14 @@ from custom_components.sp_group.client import (
     TransportError,
     UrllibTransport,
     UsageError,
+    _loggable_url,
 )
 from custom_components.sp_group.const import (
     AUTH0_REFRESH_GRANT,
     EVA_LATEST_SESSION_PATH,
     IDENTITY_HOST,
     JARVIS_ME_PATH,
+    JARVIS_SMRD_PATH,
     NJORD_HISTORY_PATH,
     OAUTH_TOKEN_PATH,
     PRICEPLAN_PATH,
@@ -304,3 +306,35 @@ def test_concurrent_fetches_spend_the_refresh_token_once() -> None:
     assert transport.refresh_grants == 1
     assert client.session is not None
     assert client.session.refresh_token == "rotated-refresh-token-1"
+
+
+def test_transport_error_keeps_account_identifiers_out_of_the_message() -> None:
+    """The premise id and account number are appended to the route, not fixed."""
+
+    def _raise(*args: object, **kwargs: object) -> object:
+        raise URLError("unreachable")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(client_module, "urlopen", _raise)
+        with pytest.raises(TransportError) as raised:
+            UrllibTransport().request(
+                "GET",
+                f"{PUBLIC_HOST}{JARVIS_SMRD_PATH}/2001590888?ns=1234567890",
+                {},
+                None,
+            )
+    message = str(raised.value)
+    assert f"{JARVIS_SMRD_PATH}/{client_module.IDENTIFIER_SEGMENT}" in message
+    assert "2001590888" not in message
+    assert "1234567890" not in message
+
+
+def test_loggable_url_keeps_the_fixed_route() -> None:
+    assert (
+        _loggable_url(f"{PUBLIC_HOST}{PRICEPLAN_PATH}?consumption=350")
+        == f"{PUBLIC_HOST}{PRICEPLAN_PATH}"
+    )
+    assert _loggable_url(f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}") == (
+        f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
+    )
+    assert _loggable_url(f"{PUBLIC_HOST}/") == PUBLIC_HOST

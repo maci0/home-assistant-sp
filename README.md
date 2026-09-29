@@ -95,9 +95,9 @@ Names below are the entity names. Unique id is `{premise_id}_{key}`. Optional ro
 | SP tariff | `tariff` | Public priceplan `sp_kwh_price`. Query uses last billed kWh, else 350 |
 | Account | `account` | Always. Status plus address, account number, AMI flag, retailer, next meter-reading window |
 
-Shared attributes on every sensor: `premise_id`, `address`, `account_number`,
-`account_status`, `account_type`, `premise_type`, `utilities`, `ami_elec`,
-`retailer_name`. Usage sensors add `last_period`, `last_period_amount`,
+Only the **Account** sensor carries the premise identifiers: `premise_id`,
+`address`, `account_number`, `account_status`, `account_type`, `premise_type`,
+`utilities`, `ami_elec`, `retailer_name`. Usage sensors add `last_period`, `last_period_amount`,
 `period_count`, `average_consumption`, `comparison`; **Electricity cumulative**
 adds `ami_half_hour_count`, `ami_daily_count`, `today_kwh`, `last_interval`,
 `last_interval_kwh`.

@@ -100,14 +100,17 @@ def test_sensors_match_energy_dashboard_contract() -> None:
 
     elec_attrs = extra_attributes(usage, SENSOR_KEY_ELECTRICITY, FIXED_NOW)
     water_attrs = extra_attributes(usage, SENSOR_KEY_WATER, FIXED_NOW)
-    assert elec_attrs["premise_id"] == usage.premise_id
-    assert elec_attrs["account_number"] == "1234567890"
-    assert elec_attrs["address"] == "1 Example Road, Singapore"
+    # Premise identifiers belong to the account sensor only.
+    assert "account_number" not in elec_attrs
+    assert "address" not in water_attrs
     assert elec_attrs["period_count"] == 4
     assert elec_attrs["ami_half_hour_count"] == 4
     assert elec_attrs["last_period_amount"] == pytest.approx(1.0)
     assert water_attrs["period_count"] == len(usage.water_periods)
     account_attrs = extra_attributes(usage, SENSOR_KEY_ACCOUNT, FIXED_NOW)
+    assert account_attrs["premise_id"] == usage.premise_id
+    assert account_attrs["account_number"] == "1234567890"
+    assert account_attrs["address"] == "1 Example Road, Singapore"
     assert account_attrs["meter_reading_title"] == "Sep 2026"
 
     last_bill = by_key[SENSOR_KEY_LAST_BILL]

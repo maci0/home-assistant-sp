@@ -125,16 +125,15 @@ def _last_interval(usage: UsageReadings) -> PeriodReading | None:
     return max(slots, key=lambda item: item.start)
 
 
-def extra_attributes(
-    usage: UsageReadings, key: str, now: datetime
-) -> dict[str, object]:
-    """Premise metadata plus last billed period for the matching utility.
+def _premise_attributes(usage: UsageReadings) -> dict[str, object]:
+    """The premise identifiers, for the account sensor only.
 
-    ``now`` is the caller's clock reading, so what counts as today is the same
-    instant the poll used when it asked Jarvis for the AMI window.
+    Address and account number identify the household, so they stay on the one
+    entity whose subject they are instead of riding along on every sensor,
+    where the recorder, templates, and voice assistants would each keep a copy.
     """
     premise = usage.premise
-    attrs: dict[str, object] = {
+    return {
         "premise_id": premise.id,
         "address": premise.address,
         "account_number": premise.account_number,
@@ -145,6 +144,17 @@ def extra_attributes(
         "ami_elec": premise.ami_elec,
         "retailer_name": premise.retailer_name,
     }
+
+
+def extra_attributes(
+    usage: UsageReadings, key: str, now: datetime
+) -> dict[str, object]:
+    """Premise metadata plus last billed period for the matching utility.
+
+    ``now`` is the caller's clock reading, so what counts as today is the same
+    instant the poll used when it asked Jarvis for the AMI window.
+    """
+    attrs: dict[str, object] = {}
     if key == SENSOR_KEY_ACCOUNT:
         reading = usage.meter_reading
         if reading is not None:
@@ -152,14 +162,13 @@ def extra_attributes(
             attrs["meter_reading_title"] = reading.title
             attrs["meter_reading_start"] = reading.start
             attrs["meter_reading_end"] = reading.end
-        return _omit_none(attrs)
+        return _omit_none(attrs | _premise_attributes(usage))
     if key == SENSOR_KEY_LAST_BILL:
         bill = usage.last_bill
         if bill is not None:
             attrs["bill_date"] = bill.date
             attrs["bill_period"] = bill.period
             attrs["due_date"] = bill.due_date
-            attrs["bill_account_number"] = bill.account_number
             attrs["bill_count"] = len(usage.bills)
         return _omit_none(attrs)
     if key == SENSOR_KEY_AMOUNT_DUE:
