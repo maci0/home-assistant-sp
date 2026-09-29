@@ -1334,6 +1334,46 @@ def _parse_ami_rows(body: object) -> tuple[PeriodReading, ...]:
 
 _LOGIN_FAILURE_LOCK = threading.Lock()
 _LOGIN_FAILURES: dict[str, float] = {}
+_LOGIN_ATTEMPTS: set[str] = set()
+
+
+def _begin_login_attempt(username: str, clock: Clock) -> None:
+    """Claim the username's single sign-in slot, or refuse the attempt.
+
+    Reading the cooldown and taking the slot share one critical section. Read
+    first and claim after, and the gap between them is the whole OAuth round
+    trip: every sign-in started in that window sees an empty map and walks
+    straight past a cooldown whose whole purpose is to cap how many attempts
+    reach Auth0 at once. The slot is per username, so two accounts still sign in
+    concurrently.
+    """
+    name = fold_text(username)
+    with _LOGIN_FAILURE_LOCK:
+        cooldown = _login_cooldown_locked(name, clock)
+        if cooldown > 0.0:
+            raise AuthError(
+                "too_many_attempts",
+                f"a previous sign-in failed; retry in {math.ceil(cooldown)}s",
+            )
+        if name in _LOGIN_ATTEMPTS:
+            raise AuthError(
+                "too_many_attempts", "another sign-in for this account is running"
+            )
+        _LOGIN_ATTEMPTS.add(name)
+
+
+def _release_login_attempt(username: str) -> None:
+    """Give the slot back; the outcome is recorded by the caller either way."""
+    with _LOGIN_FAILURE_LOCK:
+        _LOGIN_ATTEMPTS.discard(fold_text(username))
+
+
+def _login_cooldown_locked(name: str, clock: Clock) -> float:
+    """Seconds left on the folded username's cooldown. Caller holds the lock."""
+    failed_at = _LOGIN_FAILURES.get(name)
+    if failed_at is None:
+        return 0.0
+    return max(0.0, LOGIN_RETRY_COOLDOWN_SECONDS - (clock.monotonic() - failed_at))
 
 
 def _login_cooldown(username: str, clock: Clock) -> float:
@@ -1423,32 +1463,36 @@ class SpGroupClient:
             self._read_failures[label] = reason
 
     def login(self, username: str, password: str) -> Session:
-        cooldown = _login_cooldown(username, self._clock)
-        if cooldown > 0:
-            raise AuthError(
-                "too_many_attempts",
-                f"a previous sign-in failed; retry in {math.ceil(cooldown)}s",
-            )
-        payload = {
-            "client_id": AUTH0_CLIENT_ID,
-            "audience": AUTH0_AUDIENCE,
-            "username": username,
-            "password": password,
-            "scope": AUTH0_SCOPE,
-            "grant_type": AUTH0_GRANT_TYPE,
-            "realm": AUTH0_REALM,
-        }
+        _begin_login_attempt(username, self._clock)
         try:
-            mapping = self._oauth_post(payload)
-        except AuthError as exc:
-            # A rejected credential starts a cooldown; a transport failure is the
-            # host being down and throttling it would not help the user. An MFA
-            # challenge is not a rejection at all: the password was right.
-            if exc.error_folded != OAUTH_ERROR_MFA_REQUIRED:
-                _note_login_failure(username, self._clock)
-            raise
-        _clear_login_failures(username)
-        return self._adopt_session(mapping)
+            payload = {
+                "client_id": AUTH0_CLIENT_ID,
+                "audience": AUTH0_AUDIENCE,
+                "username": username,
+                "password": password,
+                "scope": AUTH0_SCOPE,
+                "grant_type": AUTH0_GRANT_TYPE,
+                "realm": AUTH0_REALM,
+            }
+            try:
+                mapping = self._oauth_post(payload)
+            except AuthError as exc:
+                # A rejected credential starts a cooldown; a transport failure is
+                # the host being down and throttling it would not help the user.
+                # An MFA challenge is not a rejection at all: the password was
+                # right.
+                if exc.error_folded != OAUTH_ERROR_MFA_REQUIRED:
+                    _note_login_failure(username, self._clock)
+                raise
+            _clear_login_failures(username)
+        finally:
+            # Every path out of the round trip gives the slot back, including the
+            # one that raises, or a failed sign-in would hold the account for
+            # every later attempt.
+            _release_login_attempt(username)
+        session = _session_from_oauth(mapping, None)
+        self._session = session
+        return session
 
     def submit_mfa(self, mfa_token: str, otp: str) -> Session:
         """Exchange an Auth0 MFA token and one-time password for a session."""

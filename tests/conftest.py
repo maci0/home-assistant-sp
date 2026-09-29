@@ -41,8 +41,10 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 def _empty_login_cooldowns() -> Iterator[None]:
     """The sign-in cooldown is process state; no test inherits another's."""
     client_module._LOGIN_FAILURES.clear()
+    client_module._LOGIN_ATTEMPTS.clear()
     yield
     client_module._LOGIN_FAILURES.clear()
+    client_module._LOGIN_ATTEMPTS.clear()
 
 
 # The instant every test run pretends it is: a day inside the recorded AMI

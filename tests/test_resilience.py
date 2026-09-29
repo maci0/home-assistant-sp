@@ -29,6 +29,7 @@ from custom_components.sp_group.client import (
     _login_cooldown,
 )
 from custom_components.sp_group.const import (
+    AUTH0_GRANT_TYPE,
     AUTH0_REFRESH_GRANT,
     ERROR_VALUE_CHARS,
     EVA_LATEST_SESSION_PATH,
@@ -582,6 +583,102 @@ def test_a_rejected_password_blocks_the_next_attempt() -> None:
     assert raised.value.error == "too_many_attempts"
     # No second request left the process: the block is local.
     assert len(transport.requests) == attempts
+
+
+class SlowLoginTransport(FixtureTransport):
+    """Rejects every password grant, after a pause the racers can overlap in.
+
+    The pause stands in for the OAuth round trip, which is the window in which
+    a check-then-act cooldown lets every concurrent sign-in through.
+    """
+
+    def __init__(self, delay: float = 0.05) -> None:
+        super().__init__(fail_login=True)
+        self._delay = delay
+        self._lock = threading.Lock()
+        self.login_grants = 0
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        *,
+        timeout: int | None = None,
+    ) -> HttpResponse:
+        if urlparse(url).path != OAUTH_TOKEN_PATH:
+            return super().request(method, url, headers, body, timeout=timeout)
+        request_body = json.loads(body.decode("utf-8")) if body else {}
+        if request_body.get("grant_type") != AUTH0_GRANT_TYPE:
+            return super().request(method, url, headers, body, timeout=timeout)
+        with self._lock:
+            self.login_grants += 1
+        time.sleep(self._delay)
+        return super().request(method, url, headers, body, timeout=timeout)
+
+
+def test_concurrent_sign_ins_for_one_account_reach_auth0_once() -> None:
+    """The cooldown caps attempts at Auth0, so racing sign-ins must not bypass it.
+
+    Each sign-in ran on its own executor thread in the flow: two credentials
+    forms for the same account, or a reauth and a first-time setup, overlap for
+    the length of the OAuth round trip. Reading the cooldown and starting the
+    request in separate steps let all eight through the guard at once.
+    """
+    transport = SlowLoginTransport()
+    racers = 8
+    start = threading.Barrier(racers)
+    errors: list[str] = []
+
+    def _sign_in() -> None:
+        start.wait()
+        try:
+            SpGroupClient(transport=transport, clock=FixedClock()).login(
+                "race@example.com", "wrong"
+            )
+        except AuthError as exc:
+            errors.append(exc.error)
+
+    threads = [threading.Thread(target=_sign_in) for _ in range(racers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "a sign-in thread hung"
+
+    assert transport.login_grants == 1
+    assert errors.count("too_many_attempts") == racers - 1
+
+
+def test_a_sign_in_for_another_account_is_not_blocked() -> None:
+    """The slot is per account, so two accounts sign in concurrently."""
+    transport = SlowLoginTransport()
+    start = threading.Barrier(2)
+    errors: list[str] = []
+
+    def _sign_in(username: str) -> None:
+        start.wait()
+        try:
+            SpGroupClient(transport=transport, clock=FixedClock()).login(username, "x")
+        except AuthError as exc:
+            errors.append(exc.error)
+
+    threads = [
+        threading.Thread(target=_sign_in, args=(name,))
+        for name in ("one@example.com", "two@example.com")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "a sign-in thread hung"
+
+    assert transport.login_grants == 2
+    # Both were refused on their own merits, so neither account is left holding
+    # the other's slot.
+    assert errors == ["invalid_grant", "invalid_grant"]
+    assert not client_module._LOGIN_ATTEMPTS
 
 
 def test_the_cooldown_expires_and_a_good_password_then_signs_in() -> None:
