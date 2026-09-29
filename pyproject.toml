@@ -3,14 +3,16 @@ name = "home-assistant-sp"
 version = "1.7.0"
 description = "Home Assistant custom integration for SP Group electricity, water, and gas"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "mypy>=1.11.0",
-    "pytest>=8.3.0",
-    "ruff>=0.6.0",
+    "mypy>=2.3.1,<3",
+    "pytest>=9.1.1,<10",
+    "ruff>=0.16.5,<0.17",
 ]
 
 [tool.pytest.ini_options]
