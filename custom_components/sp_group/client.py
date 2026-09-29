@@ -79,7 +79,10 @@ from .const import (
     JARVIS_PPMS_PATH,
     JARVIS_SMRD_PATH,
     JSON_ENCODING,
+    LOGIN_RETRY_COOLDOWN_SECONDS,
+    MAX_FCU_STATUS_READS,
     MAX_MONEY,
+    MAX_RESPONSE_BYTES,
     MONEY_PRECISION,
     NJORD_HISTORY_PATH,
     NJORD_PAYABLES_PATH,
@@ -90,6 +93,7 @@ from .const import (
     PUBLIC_HOST,
     TARIFF_DEFAULT_CONSUMPTION_KWH,
     TOKEN_EXPIRY_BUFFER_SECONDS,
+    TRANSPORT_ERROR_CHARS,
     TYCHE_WALLET_PATH,
     UNIT_KWH,
     USER_AGENT,
@@ -154,16 +158,32 @@ def _poll_pool(width: int) -> Iterator[ThreadPoolExecutor]:
         yield pool
 
 
+def _clean_text(value: object) -> str:
+    """Remote text with control and bidi-format characters removed.
+
+    Those characters reach the Home Assistant log and the reauth dialog
+    verbatim, where a log viewer would act on an escape sequence and a
+    right-to-left override could reverse how a rejection reads.
+    """
+    return " ".join("".join(char for char in str(value) if char.isprintable()).split())
+
+
+def _safe_text(value: object, limit: int = ERROR_VALUE_CHARS) -> str:
+    """Remote text, cleaned and cut short enough for a log line or a dialog."""
+    text = _clean_text(value)
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 class AuthError(Exception):
     """Login rejected by identity.spdigital.sg (invalid credentials or Auth0 error)."""
 
     def __init__(
         self, error: str, error_description: str = "", mfa_token: str | None = None
     ) -> None:
-        self.error = error
-        self.error_description = error_description
+        self.error = _clean_text(error)
+        self.error_description = _clean_text(error_description)
         self.mfa_token = mfa_token
-        super().__init__(error_description or error)
+        super().__init__(self.error_description or self.error)
 
 
 class UsageError(Exception):
@@ -259,6 +279,26 @@ def _loggable_url(url: str) -> str:
     return "/".join([root, *segments]) if segments else root
 
 
+class BodyReader(Protocol):
+    """The read side of an open response or an HTTPError."""
+
+    def read(self, amount: int, /) -> bytes: ...
+
+
+def _read_bounded(response: BodyReader) -> bytes:
+    """The body, refused past MAX_RESPONSE_BYTES.
+
+    A hostile or misconfigured upstream can stream an unbounded body; the
+    read would grow the Home Assistant process until it is swapped out or
+    killed, taking every other integration with it. One byte over the cap is
+    enough to tell an oversized body from a large legitimate one.
+    """
+    body = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise TransportError(f"response body over {MAX_RESPONSE_BYTES} bytes refused")
+    return body
+
+
 class UrllibTransport:
     def request(
         self,
@@ -274,15 +314,18 @@ class UrllibTransport:
         started = time.monotonic()
         try:
             with urlopen(request, timeout=seconds, context=_ssl_context()) as response:
-                http = HttpResponse(status=int(response.status), body=response.read())
+                http = HttpResponse(
+                    status=int(response.status), body=_read_bounded(response)
+                )
         except HTTPError as exc:
             with exc:
-                http = HttpResponse(status=int(exc.code), body=exc.read())
+                http = HttpResponse(status=int(exc.code), body=_read_bounded(exc))
         except (OSError, HTTPException) as exc:
             # URLError, socket timeout, and TLS failures all land here. Name the
             # call and the timeout so the log says which host stalled the poll.
             raise TransportError(
-                f"{method} {_loggable_url(url)} failed (timeout {seconds}s): {exc}"
+                f"{method} {_loggable_url(url)} failed (timeout {seconds}s): "
+                f"{_safe_text(exc, TRANSPORT_ERROR_CHARS)}"
             ) from exc
         # Debug, so the poll's cost per dependency is visible when someone turns
         # the domain up without filling a normal log with 15 lines a cycle.
@@ -329,8 +372,10 @@ def _require_json(response: HttpResponse, label: str) -> object:
     try:
         return _decode_json(response.body)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # The decoder quotes fragments of the body it choked on, which is
+        # upstream text.
         raise UsageError(
-            f"{label} HTTP {response.status}: response was not JSON ({exc})"
+            f"{label} HTTP {response.status}: response was not JSON ({_safe_text(exc)})"
         ) from exc
 
 
@@ -450,7 +495,7 @@ def _float(value: object) -> float:
         return 0.0
     number = _optional_float(value)
     if number is None:
-        raise UsageError(f"expected a number, got {repr(value)[:ERROR_VALUE_CHARS]}")
+        raise UsageError(f"expected a number, got {_safe_text(value)}")
     return number
 
 
@@ -634,7 +679,7 @@ def _energy_or_volume_unit(unit: str, kind: str) -> str:
     )
     if kind == "elec":
         if unit and compact not in {"kwh", "kw·h"}:
-            raise UsageError(f"unexpected electricity unit {unit!r}")
+            raise UsageError(f"unexpected electricity unit {_safe_text(unit)}")
         return "kWh"
     if kind == "water":
         return volume
@@ -1173,6 +1218,29 @@ def _parse_ami_rows(body: object) -> tuple[PeriodReading, ...]:
     return tuple(sorted(periods, key=lambda item: item.start))
 
 
+_LOGIN_FAILURE_LOCK = threading.Lock()
+_LOGIN_FAILURES: dict[str, float] = {}
+
+
+def _login_cooldown(username: str) -> float:
+    """Seconds left on the username's cooldown; 0 when a login may be attempted."""
+    with _LOGIN_FAILURE_LOCK:
+        failed_at = _LOGIN_FAILURES.get(fold_text(username))
+    if failed_at is None:
+        return 0.0
+    return max(0.0, LOGIN_RETRY_COOLDOWN_SECONDS - (time.monotonic() - failed_at))
+
+
+def _note_login_failure(username: str) -> None:
+    with _LOGIN_FAILURE_LOCK:
+        _LOGIN_FAILURES[fold_text(username)] = time.monotonic()
+
+
+def _clear_login_failures(username: str) -> None:
+    with _LOGIN_FAILURE_LOCK:
+        _LOGIN_FAILURES.pop(fold_text(username), None)
+
+
 class SpGroupClient:
     def __init__(
         self,
@@ -1199,6 +1267,12 @@ class SpGroupClient:
         return self._session
 
     def login(self, username: str, password: str) -> Session:
+        cooldown = _login_cooldown(username)
+        if cooldown > 0:
+            raise AuthError(
+                "too_many_attempts",
+                f"a previous sign-in failed; retry in {math.ceil(cooldown)}s",
+            )
         payload = {
             "client_id": AUTH0_CLIENT_ID,
             "audience": AUTH0_AUDIENCE,
@@ -1208,7 +1282,16 @@ class SpGroupClient:
             "grant_type": AUTH0_GRANT_TYPE,
             "realm": AUTH0_REALM,
         }
-        mapping = self._oauth_post(payload)
+        try:
+            mapping = self._oauth_post(payload)
+        except AuthError as exc:
+            # A rejected credential starts a cooldown; a transport failure is the
+            # host being down and throttling it would not help the user. An MFA
+            # challenge is not a rejection at all: the password was right.
+            if exc.error != "mfa_required":
+                _note_login_failure(username)
+            raise
+        _clear_login_failures(username)
         session = _session_from_oauth(mapping, None)
         self._session = session
         return session
@@ -1405,8 +1488,8 @@ class SpGroupClient:
         if response.status < 400:
             return parsed
         detail = parsed if isinstance(parsed, dict) else {}
-        error = str(detail.get("error") or detail.get("code") or "invalid_grant")
-        description = str(
+        error = _safe_text(detail.get("error") or detail.get("code") or "invalid_grant")
+        description = _safe_text(
             detail.get("error_description")
             or detail.get("description")
             or "authentication failed"
@@ -1694,6 +1777,13 @@ class SpGroupClient:
         paired = _parse_paired_fcus(body)
         if not paired:
             return ()
+        if len(paired) > MAX_FCU_STATUS_READS:
+            _LOGGER.warning(
+                "upstream listed %d paired FCUs, reading the first %d",
+                len(paired),
+                MAX_FCU_STATUS_READS,
+            )
+            paired = paired[:MAX_FCU_STATUS_READS]
         with _poll_pool(len(paired)) as pool:
             futures = [
                 pool.submit(self._fcu_status, session, thing, account_number)
@@ -1808,7 +1898,7 @@ class SpGroupClient:
             decoded = {}
         if isinstance(decoded, dict):
             mapping = decoded
-        extra = str(
+        extra = _safe_text(
             mapping.get("error_description")
             or mapping.get("error")
             or mapping.get("message")

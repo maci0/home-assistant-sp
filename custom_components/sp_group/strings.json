@@ -36,7 +36,8 @@
     "error": {
       "invalid_auth": "Invalid e-account email or password.",
       "cannot_connect": "Could not reach SP Group.",
-      "requires_verification": "SP flagged this login as suspicious. Sign in once in the SP app, wait a few minutes, then try again."
+      "requires_verification": "SP flagged this login as suspicious. Sign in once in the SP app, wait a few minutes, then try again.",
+      "too_many_attempts": "Too many sign-in attempts. Wait a minute before trying again."
     },
     "abort": {
       "already_configured": "This SP e-account is already configured.",

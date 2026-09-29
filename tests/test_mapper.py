@@ -169,7 +169,7 @@ def test_bill_delivery_state_follows_the_copy_preference(
         bill_delivery=BillDeliveryInfo(soft_copy=soft_copy, hard_copy=hard_copy)
     )
 
-    spec = {item.key: item for item in sensors_from_usage(usage)}[
+    spec = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}[
         SENSOR_KEY_BILL_DELIVERY
     ]
 
@@ -188,7 +188,7 @@ def test_empty_api_status_falls_back_to_the_translated_unknown_state() -> None:
         ),
     )
 
-    by_key = {item.key: item for item in sensors_from_usage(usage)}
+    by_key = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
 
     assert by_key[SENSOR_KEY_ACCOUNT].native_value == SENSOR_STATE_UNKNOWN
     assert by_key[SENSOR_KEY_EV_SESSION].native_value == SENSOR_STATE_UNKNOWN
@@ -201,11 +201,15 @@ def test_amount_due_carries_the_payable_currency() -> None:
     due = replace(usage.amount_due, currency="usd")
     usage = replace(usage, amount_due=due)
 
-    spec = {item.key: item for item in sensors_from_usage(usage)}[SENSOR_KEY_AMOUNT_DUE]
+    spec = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}[
+        SENSOR_KEY_AMOUNT_DUE
+    ]
 
     assert spec.native_value == pytest.approx(203.69)
     assert spec.unit_of_measurement == "USD"
-    assert extra_attributes(usage, SENSOR_KEY_AMOUNT_DUE)["currency"] == "usd"
+    assert (
+        extra_attributes(usage, SENSOR_KEY_AMOUNT_DUE, FIXED_NOW)["currency"] == "usd"
+    )
 
 
 @pytest.mark.parametrize(
@@ -222,12 +226,14 @@ def test_ev_unpaid_falls_back_to_the_order_count(
 ) -> None:
     usage = _usage_with(ev_unpaid=unpaid)
 
-    spec = {item.key: item for item in sensors_from_usage(usage)}[SENSOR_KEY_EV_UNPAID]
+    spec = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}[
+        SENSOR_KEY_EV_UNPAID
+    ]
 
     assert spec.native_value == expected_value
     assert spec.unit_of_measurement == expected_unit
     assert (spec.device_class == DEVICE_CLASS_MONETARY) is (expected_unit == UNIT_SGD)
-    assert extra_attributes(usage, SENSOR_KEY_EV_UNPAID)["order_count"] == 2
+    assert extra_attributes(usage, SENSOR_KEY_EV_UNPAID, FIXED_NOW)["order_count"] == 2
 
 
 @pytest.mark.parametrize(
@@ -251,7 +257,7 @@ def test_fcu_without_a_temperature_reports_on_and_off(
         )
     )
 
-    specs = {item.key: item for item in sensors_from_usage(usage)}
+    specs = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
 
     assert "fcu_tengah_living_1" in specs
     spec = specs["fcu_tengah_living_1"]
@@ -259,7 +265,7 @@ def test_fcu_without_a_temperature_reports_on_and_off(
     assert spec.device_class is None
     assert spec.state_class is None
     assert spec.unit_of_measurement is None
-    attrs = extra_attributes(usage, "fcu_tengah_living_1")
+    attrs = extra_attributes(usage, "fcu_tengah_living_1", FIXED_NOW)
     assert attrs["thing_name"] == "Tengah Living 1!"
     assert attrs["is_on"] is is_on
     assert attrs["setpoint"] == 25
@@ -273,7 +279,7 @@ def test_last_period_sensor_is_empty_when_the_utility_has_no_periods() -> None:
         electricity=replace(usage.electricity, periods=()),
     )
 
-    specs = {item.key: item for item in sensors_from_usage(usage)}
+    specs = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
 
     assert specs[SENSOR_KEY_ELECTRICITY_LAST].native_value is None
     assert specs[SENSOR_KEY_ELECTRICITY_LAST].state_class == STATE_CLASS_MEASUREMENT
@@ -281,12 +287,14 @@ def test_last_period_sensor_is_empty_when_the_utility_has_no_periods() -> None:
 
 
 def test_ppms_credit_sensor_appears_only_when_enrolled() -> None:
-    usage = _usage_with(ppms_credit=42.5, ppms_updated_at="2026-09-01T00:00:00Z")
+    usage = _usage_with(ppms_credit=42.5)
     assert SENSOR_KEY_PPMS not in {
-        item.key for item in sensors_from_usage(_usage_with())
+        item.key for item in sensors_from_usage(_usage_with(), FIXED_NOW)
     }
 
-    spec = {item.key: item for item in sensors_from_usage(usage)}[SENSOR_KEY_PPMS]
+    spec = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}[
+        SENSOR_KEY_PPMS
+    ]
 
     assert spec.native_value == pytest.approx(42.5)
     assert spec.device_class == DEVICE_CLASS_MONETARY
@@ -357,7 +365,7 @@ def test_fcu_lookup_returns_the_own_readings_of_each_coil() -> None:
     cool = coil("Cool–01", 21.5)
     other = coil("Cool-01", 29.0)
     two = replace(usage, fcus=(cool, other))
-    by_key = {spec.key: spec for spec in sensors_from_usage(two)}
+    by_key = {spec.key: spec for spec in sensors_from_usage(two, FIXED_NOW)}
     assert by_key[_fcu_sensor_key("Cool–01")].native_value == pytest.approx(21.5)
     assert by_key[_fcu_sensor_key("Cool-01")].native_value == pytest.approx(29.0)
     assert _fcu_from_key(two, _fcu_sensor_key("Cool–01")) is cool

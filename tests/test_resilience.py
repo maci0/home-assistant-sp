@@ -27,13 +27,17 @@ from custom_components.sp_group.client import (
     UrllibTransport,
     UsageError,
     _loggable_url,
+    _login_cooldown,
 )
 from custom_components.sp_group.const import (
     AUTH0_REFRESH_GRANT,
+    ERROR_VALUE_CHARS,
     EVA_LATEST_SESSION_PATH,
     IDENTITY_HOST,
     JARVIS_ME_PATH,
     JARVIS_SMRD_PATH,
+    LOGIN_RETRY_COOLDOWN_SECONDS,
+    MAX_RESPONSE_BYTES,
     NJORD_HISTORY_PATH,
     OAUTH_TOKEN_PATH,
     PRICEPLAN_PATH,
@@ -447,8 +451,8 @@ class _Response:
         self.status = 200
         self._body = body
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, amount: int | None = None) -> bytes:
+        return self._body if amount is None else self._body[:amount]
 
     def __enter__(self) -> _Response:
         return self
@@ -459,3 +463,99 @@ class _Response:
 
 def _cached(factory: Callable[[], ssl.SSLContext]) -> Callable[[], ssl.SSLContext]:
     return functools.lru_cache(maxsize=None)(factory)
+
+
+def test_urllib_transport_refuses_an_oversized_body() -> None:
+    """An upstream streaming without an end must not grow the HA process."""
+    url = f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
+
+    def _fake_urlopen(*args: object, **kwargs: object) -> object:
+        return _FakeResponse(b"x" * (MAX_RESPONSE_BYTES + 1))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(client_module, "urlopen", _fake_urlopen)
+        with pytest.raises(TransportError) as raised:
+            UrllibTransport().request("POST", url, {}, b"{}")
+    assert str(MAX_RESPONSE_BYTES) in str(raised.value)
+
+
+def test_urllib_transport_reads_a_body_at_the_cap() -> None:
+    """A large legitimate body must still arrive whole."""
+    url = f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
+    payload = b"x" * MAX_RESPONSE_BYTES
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            client_module,
+            "urlopen",
+            lambda *a, **k: _FakeResponse(payload),
+        )
+        response = UrllibTransport().request("POST", url, {}, b"{}")
+    assert response.body == payload
+
+
+def test_a_rejected_password_blocks_the_next_attempt() -> None:
+    """Auth0 bot detection locks the utility account, so a retry must wait."""
+    transport = FixtureTransport(fail_login=True)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
+    with pytest.raises(AuthError):
+        client.login("user@example.com", "wrong")
+    attempts = len(transport.requests)
+
+    with pytest.raises(AuthError) as raised:
+        SpGroupClient(transport=transport, clock=FixedClock()).login(
+            "user@example.com", "wrong-again"
+        )
+    assert raised.value.error == "too_many_attempts"
+    # No second request left the process: the block is local.
+    assert len(transport.requests) == attempts
+
+
+def test_the_cooldown_expires_and_a_good_password_then_signs_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mistyped password must not lock the account out for good."""
+    with pytest.raises(AuthError):
+        SpGroupClient(transport=FixtureTransport(fail_login=True)).login(
+            "u@example.com", "a"
+        )
+    with pytest.raises(AuthError) as blocked:
+        SpGroupClient(transport=FixtureTransport()).login("u@example.com", "b")
+    assert blocked.value.error == "too_many_attempts"
+
+    later = time.monotonic() + LOGIN_RETRY_COOLDOWN_SECONDS
+    monkeypatch.setattr(client_module.time, "monotonic", lambda: later)
+    SpGroupClient(transport=FixtureTransport()).login("u@example.com", "b")
+    assert _login_cooldown("u@example.com") == 0
+
+
+def test_an_mfa_challenge_is_not_a_rejected_password() -> None:
+    """The password was right; the code step must not be throttled."""
+    transport = FixtureTransport(require_mfa=True)
+    with pytest.raises(AuthError) as raised:
+        SpGroupClient(transport=transport, clock=FixedClock()).login(
+            "user@example.com", "secret"
+        )
+    assert raised.value.error == "mfa_required"
+    assert _login_cooldown("user@example.com") == 0
+
+
+def test_upstream_error_text_is_stripped_and_bounded() -> None:
+    """Hostile error text reaches the log and the reauth dialog; cap it there."""
+    hostile = "wrong password ‮" + "x" * 500 + "\x1b[31m"
+    transport = FixtureTransport(
+        responses={
+            OAUTH_TOKEN_PATH: HttpResponse(
+                403,
+                json.dumps({"error": hostile, "error_description": hostile}).encode(),
+            )
+        }
+    )
+    with pytest.raises(AuthError) as raised:
+        SpGroupClient(transport=transport, clock=FixedClock()).login(
+            "user@example.com", "secret"
+        )
+    for text in (raised.value.error, raised.value.error_description, str(raised.value)):
+        assert len(text) <= ERROR_VALUE_CHARS + 3
+        assert "\x1b" not in text
+        assert "‮" not in text

@@ -21,15 +21,25 @@ from .const import (
     DOMAIN,
     OAUTH_ERROR_MFA_REQUIRED,
     OAUTH_ERROR_REQUIRES_VERIFICATION,
+    fold_text,
     parse_electricity_price,
 )
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
-    }
-)
+# RFC 5321 caps an address; the password bound only stops a pasted blob from
+# being sent as a request body.
+MAX_USERNAME_CHARS = 254
+MAX_PASSWORD_CHARS = 1024
+
+_CREDENTIALS = {
+    vol.Required(CONF_USERNAME): vol.All(
+        str, vol.Length(min=1, max=MAX_USERNAME_CHARS)
+    ),
+    vol.Required(CONF_PASSWORD): vol.All(
+        str, vol.Length(min=1, max=MAX_PASSWORD_CHARS)
+    ),
+}
+
+STEP_USER_DATA_SCHEMA = vol.Schema(dict(_CREDENTIALS))
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,8 +73,8 @@ async def _validate(
 
 def _auth_error_key(exc: AuthError) -> str:
     """The strings.json error key: the Auth0 code, or invalid_auth for the rest."""
-    if exc.error == OAUTH_ERROR_REQUIRES_VERIFICATION:
-        return OAUTH_ERROR_REQUIRES_VERIFICATION
+    if exc.error in {OAUTH_ERROR_REQUIRES_VERIFICATION, "too_many_attempts"}:
+        return exc.error
     return "invalid_auth"
 
 
@@ -190,7 +200,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
+            await self.async_set_unique_id(fold_text(user_input[CONF_USERNAME]))
             self._abort_if_unique_id_configured()
             try:
                 data = await _validate(
@@ -266,18 +276,18 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.warning("reauthentication could not read the account: %s", exc)
                 errors["base"] = "cannot_connect"
             else:
-                await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
+                await self.async_set_unique_id(fold_text(user_input[CONF_USERNAME]))
                 self._abort_if_unique_id_mismatch()
                 return self.async_update_reload_and_abort(entry, data_updates=data)
         return self.async_show_form(
             step_id=step_id,
             data_schema=vol.Schema(
                 {
+                    **_CREDENTIALS,
                     vol.Required(
                         CONF_USERNAME,
                         default=entry.data.get(CONF_USERNAME, ""),
-                    ): str,
-                    vol.Required(CONF_PASSWORD): str,
+                    ): vol.All(str, vol.Length(min=1, max=MAX_USERNAME_CHARS)),
                 }
             ),
             errors=errors,

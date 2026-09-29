@@ -132,6 +132,25 @@ MONEY_PRECISION = 20
 # How much of an offending value a parse error quotes back, so a hostile
 # response cannot push a megabyte of text into the log.
 ERROR_VALUE_CHARS = 60
+# Same bound for a transport failure's own text, which is longer than a parse
+# error's (it carries the errno and the address it failed on).
+TRANSPORT_ERROR_CHARS = 160
+
+# Largest response body the client will buffer. Every SP Group read is well
+# under this (a month of half-hour AMI is a few hundred kilobytes), so a body
+# past it is a hostile or broken upstream streaming without an end.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+# A failed password login blocks the next one for the same account this long.
+# Auth0 counts retries per account and answers bot detection with a lockout,
+# so a mistyped password, a stale stored one, or a reauth loop must not turn
+# into a locked utility account.
+LOGIN_RETRY_COOLDOWN_SECONDS = 60
+
+# How many paired-FCU coils one poll reads the status of. Each is a separate
+# request at OPTIONAL_HTTP_TIMEOUT_SECONDS, and the coil list is upstream data,
+# so an unbounded fan-out would let a hostile list stall the poll executor.
+MAX_FCU_STATUS_READS = 8
 
 UPDATE_INTERVAL = timedelta(minutes=30)
 

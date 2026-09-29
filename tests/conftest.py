@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+import pytest
+
+from custom_components.sp_group import client as client_module
 from custom_components.sp_group.client import HttpResponse, SpGroupClient
 from custom_components.sp_group.const import (
     AUTH0_GRANT_TYPE,
@@ -32,6 +35,15 @@ from custom_components.sp_group.const import (
 from custom_components.sp_group.models import SG_TZ
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _empty_login_cooldowns() -> Iterator[None]:
+    """The sign-in cooldown is process state; no test inherits another's."""
+    client_module._LOGIN_FAILURES.clear()
+    yield
+    client_module._LOGIN_FAILURES.clear()
+
 
 # The instant every test run pretends it is: a day inside the recorded AMI
 # window in jarvis_ami_day.json. AMI windows, "today" buckets, and token expiry

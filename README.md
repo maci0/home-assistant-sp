@@ -130,10 +130,17 @@ Then optional reads (8s HTTP timeout each). 4xx or empty payloads skip the match
 - `GET /eva/v1/sessions/latest`, `/eva/v2/order/receipts`, `/eva/v1/order/unpaid`. A 403 `scope_not_found` on the session call skips the rest of Eva
 - `GET /notifications/v1/notifications` unread count only (bodies are not stored)
 - `GET /skalbox/b2c/account/v1/retrieveBillPreferences`
-- `POST /frosty/graphql` paired FCUs, then `/frosty/fcu_status` per `thingName`
+- `POST /frosty/graphql` paired FCUs, then `/frosty/fcu_status` per `thingName`, for the first 8 coils
 - `GET https://public.api.spdigital.sg/priceplan/v2/plans/price?consumption={last billed kWh or 350}`
 
+Every response body is read under an 8 MB cap; a larger one fails the read instead of
+growing the process.
+
 The refresh token is stored on the config entry so restarts do not password-login every time. Diagnostics omit the password and tokens.
+
+A rejected password blocks the next sign-in for the same account for 60 seconds, so a
+mistyped password or a reauth loop cannot trip Auth0 bot detection. An MFA challenge does
+not count as a rejection, and a successful sign-in clears the wait.
 
 ## Not included
 
@@ -143,6 +150,7 @@ Bill pay, GIRO setup, UniDollar pay, add card, start/stop EV charge, meter-readi
 
 - **invalid_claim / rejected session token:** the client must request the `me:*` scopes. Use this repo, not a stale copy.
 - **Suspicious request requires verification:** Auth0 bot detection after many password logins. Sign in once in the SP app, wait a few minutes, then reload or reauthenticate.
+- **Too many sign-in attempts:** the client refused a password login within 60 seconds of a rejected one. Wait it out; the password is not the problem.
 - **No Energy statistics:** wait for the first poll, hard-refresh Energy settings, then pick **SP Group electricity** (`sp_group:{premise_id}_electricity`), not a sensor.
 - **Missing optional sensor after upgrade:** wait for the next poll. New keys are added without a reload.
 - **Entities unavailable after a failed poll:** the reason is the `last_error` field in the config entry diagnostics, and the dependency that failed is named in the warning it logged. Set `logger: custom_components.sp_group` to debug for the per-request status and duration of each poll.

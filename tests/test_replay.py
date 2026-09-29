@@ -76,7 +76,6 @@ def test_token_expiry_is_read_from_the_clock_not_the_host() -> None:
         access_token=TOKEN_PAYLOAD["access_token"],
         id_token=TOKEN_PAYLOAD["id_token"],
         refresh_token=TOKEN_PAYLOAD["refresh_token"],
-        scope=TOKEN_PAYLOAD["scope"],
         expires_at=FixedClock().timestamp() + EXPIRY_BUFFER + 60,
     )
     assert not session.is_expired(FixedClock().timestamp())

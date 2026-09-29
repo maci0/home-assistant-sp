@@ -23,6 +23,8 @@ from custom_components.sp_group.client import (
 from custom_components.sp_group.const import (
     DEVICE_CLASS_TEMPERATURE,
     EVA_LATEST_SESSION_PATH,
+    FROSTY_FCU_STATUS_PATH,
+    MAX_FCU_STATUS_READS,
     OPTIONAL_HTTP_TIMEOUT_SECONDS,
     SENSOR_KEY_EV_LAST_CHARGE,
     SENSOR_KEY_FCU,
@@ -334,3 +336,38 @@ def test_unpaid_orders_total_sums_in_cents() -> None:
     )
     assert unpaid is not None
     assert unpaid.amount == 19.65
+
+
+def test_a_long_paired_fcu_list_is_read_up_to_the_cap() -> None:
+    """Each coil is its own request, and the list is upstream data."""
+
+    class ManyFcus(FixtureTransport):
+        status_reads = 0
+
+        def request(self, method, url, headers, body, *, timeout=None):
+            parsed = urlparse(url)
+            if method == "POST" and parsed.path == "/frosty/graphql":
+                return HttpResponse(
+                    200,
+                    json.dumps(
+                        {
+                            "data": {
+                                "getPairedFCUs": [
+                                    {
+                                        "displayName": f"Coil {index}",
+                                        "thingName": f"tengah-{index}",
+                                    }
+                                    for index in range(MAX_FCU_STATUS_READS + 5)
+                                ]
+                            }
+                        }
+                    ).encode(),
+                )
+            if method == "GET" and parsed.path == FROSTY_FCU_STATUS_PATH:
+                ManyFcus.status_reads += 1
+                return HttpResponse(200, json.dumps({"is_on": True}).encode())
+            return super().request(method, url, headers, body, timeout=timeout)
+
+    usage = fixture_client(ManyFcus()).fetch_usage()
+    assert len(usage.fcus) == MAX_FCU_STATUS_READS
+    assert ManyFcus.status_reads == MAX_FCU_STATUS_READS

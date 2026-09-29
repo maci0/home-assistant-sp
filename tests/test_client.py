@@ -432,7 +432,6 @@ def test_stored_session_skips_password_login() -> None:
         access_token=token_payload["access_token"],
         id_token=token_payload["id_token"],
         refresh_token=token_payload["refresh_token"],
-        scope=token_payload["scope"],
         expires_at=FixedClock().timestamp() + 3600,
     )
     transport = FixtureTransport()
@@ -450,7 +449,6 @@ def test_expired_stored_session_refreshes_instead_of_sending_the_password() -> N
             access_token="stale-access",
             id_token="stale-id",
             refresh_token=token_payload["refresh_token"],
-            scope=token_payload["scope"],
             expires_at=FixedClock().timestamp() - 1,
         ),
     )
@@ -476,7 +474,6 @@ def test_session_without_a_refresh_token_demands_a_login() -> None:
             access_token="",
             id_token="stale",
             refresh_token=None,
-            scope=None,
             expires_at=0,
         ),
     )
@@ -681,7 +678,6 @@ def test_ppms_credit_is_read_when_the_premise_enrols() -> None:
     usage = fixture_client(transport).fetch_usage()
 
     assert usage.ppms_credit == pytest.approx(42.5)
-    assert usage.ppms_updated_at == "2026-09-01T00:00:00Z"
     ppms_paths = [
         urlparse_path(req.url)
         for req in transport.requests
@@ -703,7 +699,6 @@ def test_ppms_enrolment_without_a_balance_leaves_the_credit_unset() -> None:
     usage = fixture_client(transport).fetch_usage()
 
     assert usage.ppms_credit is None
-    assert usage.ppms_updated_at is None
     assert usage.electricity is not None
 
 
