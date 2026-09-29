@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import unicodedata
 from datetime import timedelta
+from decimal import Decimal
 
 DOMAIN = "sp_group"
 ATTRIBUTION = "Data provided by SP Group"
@@ -119,6 +120,14 @@ OAUTH_ERROR_REQUIRES_VERIFICATION = "requires_verification"
 
 TARIFF_DEFAULT_CONSUMPTION_KWH = 350
 EVA_INTEGER_CENTS_MIN = 100
+
+# Ceiling and precision for money rounded through Decimal. Decimal.quantize
+# raises InvalidOperation once the result needs more digits than the context
+# holds, so a magnitude past the ceiling is dropped as unparseable instead of
+# aborting the poll. A trillion dollars is far past any premise's bill,
+# balance, or credit, and the digits still fit with room to spare.
+MAX_MONEY = Decimal("1e12")
+MONEY_PRECISION = 20
 
 # How much of an offending value a parse error quotes back, so a hostile
 # response cannot push a megabyte of text into the log.

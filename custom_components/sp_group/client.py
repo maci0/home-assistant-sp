@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from functools import cache
 from http.client import HTTPException
 from typing import Protocol, TypeGuard
@@ -78,6 +79,8 @@ from .const import (
     JARVIS_PPMS_PATH,
     JARVIS_SMRD_PATH,
     JSON_ENCODING,
+    MAX_MONEY,
+    MONEY_PRECISION,
     NJORD_HISTORY_PATH,
     NJORD_PAYABLES_PATH,
     NOTIFICATIONS_PATH,
@@ -354,6 +357,30 @@ def _eva_scope_denied(response: HttpResponse) -> bool:
     return error == "scope_not_found" or "scope_not_found" in description
 
 
+def _round_half_up(value: Decimal, exponent: str) -> float | None:
+    """Round to ``exponent`` half-up, or None when the value is out of range.
+
+    ``round()`` is half-to-even, so a 2.675 dollar amount settles at 2.67 and a
+    2.665 one at 2.66, one cent away from what a bill charges. Money is rounded
+    through Decimal so the tie is decided on the decimal value, not on the
+    binary one, where 2.675 sits just under the half.
+
+    quantize() raises rather than returning a number once the result needs more
+    digits than the context holds, so a magnitude no bill can carry is dropped
+    instead: a hostile 1e308 would abort the whole poll over one field.
+    """
+    if not value.is_finite() or abs(value) > MAX_MONEY:
+        return None
+    with localcontext() as context:
+        context.prec = MONEY_PRECISION
+        return float(value.quantize(Decimal(exponent), rounding=ROUND_HALF_UP))
+
+
+def _round_sgd(value: Decimal) -> float | None:
+    """SGD to cents, half-up."""
+    return _round_half_up(value, "0.01")
+
+
 def _cents_to_sgd(value: object, *, cents_min: int | None = None) -> float | None:
     """Parse a money field as cents, or None when it is not a finite number.
 
@@ -364,9 +391,10 @@ def _cents_to_sgd(value: object, *, cents_min: int | None = None) -> float | Non
     number = _optional_float(value)
     if number is None:
         return None
+    amount = Decimal(str(number))
     if cents_min is not None and abs(number) < cents_min:
-        return number
-    return round(number / 100.0, 2)
+        return _round_sgd(amount)
+    return _round_sgd(amount / 100)
 
 
 def _eva_sgd(value: object) -> float | None:
@@ -374,7 +402,7 @@ def _eva_sgd(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, float):
-        return round(value, 2) if math.isfinite(value) else None
+        return _round_sgd(Decimal(str(value))) if math.isfinite(value) else None
     if isinstance(value, int):
         return _cents_to_sgd(value, cents_min=EVA_INTEGER_CENTS_MIN)
     if isinstance(value, str) and value.strip():
@@ -383,9 +411,16 @@ def _eva_sgd(value: object) -> float | None:
             try:
                 return _cents_to_sgd(int(text), cents_min=EVA_INTEGER_CENTS_MIN)
             except ValueError:
-                pass
+                # Not a plain integer literal ("1e3", "1_0"), so the cents
+                # decision falls to the parsed magnitude: an integral value is
+                # an integer amount, however it was spelled. Deciding on the
+                # text instead read "1e3" as 1000 dollars against "1000"
+                # cents, the same amount 100 times apart.
+                whole = _optional_float(text)
+                if whole is not None and whole.is_integer():
+                    return _cents_to_sgd(int(whole), cents_min=EVA_INTEGER_CENTS_MIN)
         dollars = _optional_float(text)
-        return round(dollars, 2) if dollars is not None else None
+        return _round_sgd(Decimal(str(dollars))) if dollars is not None else None
     return None
 
 
@@ -393,10 +428,12 @@ def _tariff_consumption(electricity: UtilitySeries | None) -> str:
     if electricity is None or not electricity.periods:
         return str(TARIFF_DEFAULT_CONSUMPTION_KWH)
     last = max(electricity.periods, key=lambda item: item.start)
-    kwh = round(last.amount)
-    if kwh <= 0:
+    # Half-up, not ``round``: round() is half-to-even, so a 142.5 kWh period
+    # asks the price-plan endpoint for 142 kWh and a 141.5 kWh one for 142.
+    kwh = _round_half_up(Decimal(str(last.amount)), "1")
+    if kwh is None or kwh <= 0:
         return str(TARIFF_DEFAULT_CONSUMPTION_KWH)
-    return str(kwh)
+    return str(int(kwh))
 
 
 def _require_mapping(value: object, label: str) -> dict[str, object]:
@@ -793,7 +830,7 @@ def _parse_green_goals(body: object, premise_id: str) -> tuple[GreenGoal, ...]:
                     matched.get("consumption_percentage_difference")
                 ),
                 cost_difference_sgd=(
-                    round(cost_cents / 100.0, 2) if cost_cents is not None else None
+                    _cents_to_sgd(cost_cents) if cost_cents is not None else None
                 ),
                 unit=unit,
             )
@@ -913,16 +950,20 @@ def _parse_ev_unpaid(body: object) -> EvUnpaidInfo | None:
     rows = payload.get("orders") if isinstance(payload, dict) else None
     if not isinstance(rows, list) or not rows:
         return None
-    total = 0.0
+    # Added in cents, not as binary floats: 12.30 + 7.35 is 19.649999999999999
+    # in float, and the sensor then reports a total no bill ever matched.
+    total_cents = 0
     found = False
     for row in rows:
         if not isinstance(row, dict):
             continue
         amount = _eva_sgd(row.get("amount"))
         if amount is not None:
-            total += amount
+            total_cents += round(amount * 100)
             found = True
-    return EvUnpaidInfo(count=len(rows), amount=total if found else None)
+    return EvUnpaidInfo(
+        count=len(rows), amount=total_cents / 100 if found else None
+    )
 
 
 def _parse_unread(body: object) -> int | None:

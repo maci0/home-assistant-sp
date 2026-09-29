@@ -32,6 +32,7 @@ from custom_components.sp_group.const import (
     UNIT_CELSIUS,
 )
 from custom_components.sp_group.mapper import sensors_from_usage
+from custom_components.sp_group.models import PeriodReading, UtilitySeries
 
 from .conftest import FIXED_NOW, FixtureTransport, fixture_client
 
@@ -254,3 +255,82 @@ def test_tariff_consumption_from_last_billed_kwh() -> None:
     gas_urls = [req.url for req in gas.requests if "priceplan" in req.url]
     assert f"consumption={TARIFF_DEFAULT_CONSUMPTION_KWH}" in gas_urls[0]
     assert _tariff_consumption(None) == str(TARIFF_DEFAULT_CONSUMPTION_KWH)
+
+
+def test_tariff_consumption_rounds_half_up_not_to_even() -> None:
+    """A .5 kWh period rounds up; round() would send 142 for 142.5."""
+
+    def consumption_for(amount: float) -> str:
+        return _tariff_consumption(
+            UtilitySeries(
+                total=amount,
+                unit="kWh",
+                periods=(
+                    PeriodReading(start=FIXED_NOW, amount=amount),
+                ),
+                average=None,
+                comparison=None,
+            )
+        )
+
+    assert consumption_for(142.5) == "143"
+    assert consumption_for(141.5) == "142"
+    assert consumption_for(2.5) == "3"
+    # Below half a kWh still falls back to the default, as before.
+    assert consumption_for(0.4) == str(TARIFF_DEFAULT_CONSUMPTION_KWH)
+
+
+def test_eva_sgd_rounds_money_half_up() -> None:
+    """Banker's rounding put a .xx5 cent tie a cent under the billed amount."""
+    assert _eva_sgd("2.675") == 2.68
+    assert _eva_sgd("2.665") == 2.67
+    assert _eva_sgd("0.005") == 0.01
+    assert _eva_sgd("0.015") == 0.02
+
+
+def test_eva_sgd_cents_decision_follows_the_magnitude_not_the_spelling() -> None:
+    """'1e3' is the same amount as '1000'; both are cents, 10.00 either way."""
+    assert _eva_sgd("1e3") == _eva_sgd("1000") == 10.0
+    assert _eva_sgd("1_0") == _eva_sgd("10") == 10.0
+    # A fractional value stays dollars however it is written.
+    assert _eva_sgd("1.0e3") == 1000.0
+
+
+def test_eva_sgd_drops_money_no_bill_can_carry() -> None:
+    """A hostile magnitude is unparseable, not a poll-wide crash."""
+    assert _eva_sgd(1e308) is None
+    assert _eva_sgd("1e308") is None
+    assert _eva_sgd(float("nan")) is None
+    assert _eva_sgd("inf") is None
+
+
+def test_last_charge_keeps_a_zero_kwh_reading() -> None:
+    """0 kWh is a reading; ``or`` replaced it with the connector's 18.5 kWh."""
+    zero = _parse_ev_last_charge(
+        {
+            "data": [
+                {
+                    "total_consumption": 0,
+                    "connector_kwh": 18.5,
+                    "transaction_amount": "12.50",
+                }
+            ]
+        }
+    )
+    assert zero is not None
+    assert zero.kwh == 0.0
+    # A missing total_consumption still falls back to the connector reading.
+    fallback = _parse_ev_last_charge(
+        {"data": [{"connector_kwh": 18.5, "transaction_amount": "12.50"}]}
+    )
+    assert fallback is not None
+    assert fallback.kwh == 18.5
+
+
+def test_unpaid_orders_total_sums_in_cents() -> None:
+    """12.30 + 7.35 is 19.649999999999999 as floats, not 19.65."""
+    unpaid = _parse_ev_unpaid(
+        {"data": {"orders": [{"amount": "12.30"}, {"amount": "7.35"}]}}
+    )
+    assert unpaid is not None
+    assert unpaid.amount == 19.65
