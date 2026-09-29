@@ -193,6 +193,12 @@ recorded fixtures through the shipped client and needs no credentials.
 local checkout install the same versions. Use `uv sync --extra dev` only when
 intentionally changing dependencies, then commit the updated `uv.lock`.
 
+uv refuses to run outside the range `pyproject.toml` declares, and the
+workflow installs the floor of that range. `.python-version` names the
+interpreter uv builds the environment with; `requires-python`, the mypy target
+and the ruff target have to agree with it, which `tests/test_toolchain.py`
+checks.
+
 Optional live call: `SP_USERNAME` and `SP_PASSWORD`. Both are required; the
 script exits 1 naming the missing one, 2 on rejected credentials, 3 on a usage
 failure, and 0 only when it read the API.
@@ -206,6 +212,10 @@ and round that produced it; paste an offending payload into a case in `tests/`
 to keep it as a regression.
 
 ### Determinism
+
+CI runs the gate under `LC_ALL=C.UTF-8`, `TZ=UTC` and `PYTHONHASHSEED=0`
+(`.github/workflows/ci.yml`), so set the same three before `uv run pytest`
+locally and a local result means what a CI result means.
 
 A poll reads the network through `UrllibTransport` and the clock through the
 `Clock` protocol in `models.py`; nothing else in the client, mapper, or history
