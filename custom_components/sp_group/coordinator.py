@@ -27,6 +27,7 @@ from .const import (
     SENSOR_KEY_ELECTRICITY,
     SENSOR_KEY_GAS,
     SENSOR_KEY_LAST_BILL,
+    SLOW_POLL_MS,
     STATISTIC_KEY_ELECTRICITY_COST,
     STATISTIC_NAME_BILL,
     STATISTIC_NAME_ELECTRICITY,
@@ -81,6 +82,11 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         self.client = client
         self.entry = entry
         self.last_error: str | None = None
+        # How the last poll went, kept for the diagnostics download: the log
+        # line naming a failure scrolls away within the hour, and an operator
+        # asking why the sensors are stale gets the log or nothing.
+        self.last_poll_ms: int | None = None
+        self.last_success: datetime | None = None
         self._stats_lock = asyncio.Lock()
         self._stats_task: asyncio.Task[None] | None = None
         self._stats_stopped = False
@@ -149,10 +155,11 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             # diagnostics download reports once the entities are unavailable
             # and the log has scrolled away.
             self.last_error = str(exc)
+            self.last_poll_ms = round((time.monotonic() - started) * 1000)
             _LOGGER.debug(
                 "poll for %s failed after %d ms: %s",
                 self.entry.title,
-                round((time.monotonic() - started) * 1000),
+                self.last_poll_ms,
                 exc,
             )
             raise self._update_error(exc) from exc
@@ -160,13 +167,23 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         # The premise id is the account number, so it stays out of the log the
         # way the client keeps it out of the URLs it logs. The entry title
         # names the poll.
+        self.last_poll_ms = round((time.monotonic() - started) * 1000)
+        self._now = self.client.clock.now()
+        self.last_success = self._now
         _LOGGER.debug(
             "poll for %s fetched usage in %d ms",
             self.entry.title,
-            round((time.monotonic() - started) * 1000),
+            self.last_poll_ms,
         )
+        if self.last_poll_ms > SLOW_POLL_MS:
+            # A poll this slow refreshed every sensor, so nothing downstream of
+            # the entities shows that it cost what it did.
+            _LOGGER.warning(
+                "poll for %s took %d ms and still completed every read",
+                self.entry.title,
+                self.last_poll_ms,
+            )
         self._persist_session_if_changed()
-        self._now = self.client.clock.now()
         self._schedule_stats_import()
         return usage
 

@@ -177,6 +177,13 @@ MAX_FCU_STATUS_READS = 8
 
 UPDATE_INTERVAL = timedelta(minutes=30)
 
+# A poll that succeeds this slowly still refreshed every sensor, so the
+# entities look healthy and nothing else records the cost. The required reads
+# time out after HTTP_TIMEOUT_SECONDS and the optional ones after
+# OPTIONAL_HTTP_TIMEOUT_SECONDS, and they run in fan-out pools, so a poll
+# several times over that is upstream latency, not a slow network.
+SLOW_POLL_MS = 60_000
+
 DEVICE_CLASS_ENERGY = "energy"
 DEVICE_CLASS_WATER = "water"
 DEVICE_CLASS_GAS = "gas"

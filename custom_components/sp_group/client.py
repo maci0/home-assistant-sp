@@ -20,7 +20,7 @@ import math
 import ssl
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -233,30 +233,6 @@ class Transport(Protocol):
     ) -> HttpResponse: ...
 
 
-def _request_label(url: str) -> str:
-    """The request target without its query string.
-
-    Query strings here carry account numbers, thing names, and consumption
-    values, so only the path reaches a log line or an error message.
-    """
-    return url.split("?", 1)[0]
-
-
-def _log_optional_status(path: str, status: int) -> None:
-    """Report an optional read that answered with an error status.
-
-    A 5xx means the dependency is broken and the entities it feeds go
-    unavailable, so it warns. A 4xx means the account has no enrollment for
-    that service, which is the expected steady state and only a debug line
-    here; ``_optional_json`` then warns again for the same response, with the
-    server's message, when the body reaches it.
-    """
-    if status >= 500:
-        _LOGGER.warning("optional read %s returned HTTP %s", path, status)
-    else:
-        _LOGGER.debug("optional read %s returned HTTP %s", path, status)
-
-
 @cache
 def _ssl_context() -> ssl.SSLContext:
     """The verified-certificate context, built once per process.
@@ -357,7 +333,7 @@ class UrllibTransport:
         _LOGGER.debug(
             "%s %s -> HTTP %s in %d ms",
             method,
-            _request_label(url),
+            _loggable_url(url),
             http.status,
             round((time.monotonic() - started) * 1000),
         )
@@ -442,34 +418,36 @@ def _server_message(response: HttpResponse) -> str:
     return f": {text}" if text else ""
 
 
-def _optional_json(response: HttpResponse, label: str) -> object | None:
+def _optional_json(
+    response: HttpResponse,
+    label: str,
+    on_failure: Callable[[str], None] | None = None,
+) -> object | None:
     """Decode an optional read, or None when the host reported no data.
 
-    A status in OPTIONAL_ABSENT_STATUSES means the read had nothing to report
-    and is not an error. Any other error status is a failed read, and it is
-    logged with the server's own message: without it a 401 on every poll drops
-    a sensor with no trace of why, which reads as "no usage" rather than
-    "the token was rejected".
+    An error status was already logged with the server's own message where the
+    response arrived, so it is not repeated here: a 401 on every poll otherwise
+    writes the same line twice per cycle. A body that is not JSON is only
+    noticed here, and that one is reported, because the status said 200.
+    ``on_failure`` is where the client keeps the reason for the diagnostics
+    download, which outlives the log line.
     """
     if response.status >= 400:
-        if response.status not in OPTIONAL_ABSENT_STATUSES:
-            _LOGGER.warning(
-                "%s returned HTTP %s%s",
-                label,
-                response.status,
-                _server_message(response),
-            )
         return None
     try:
         return _decode_json(response.body)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        _LOGGER.warning(
-            "%s returned a body that is not JSON: %s", label, _safe_text(exc)
-        )
+        # The decoder quotes a fragment of the body it choked on, which is
+        # upstream text, so it is cleaned and cut before it reaches the log.
+        detail = _safe_text(exc)
+        _LOGGER.warning("%s returned a body that is not JSON: %s", label, detail)
+        if on_failure is not None:
+            on_failure(f"body was not JSON: {detail}")
         return None
 
 
-def _eva_scope_denied(response: HttpResponse) -> bool:
+def _scope_denied(response: HttpResponse) -> bool:
+    """A 403 the grant does not cover, which is the account's own business."""
     if response.status != 403:
         return False
     try:
@@ -1404,6 +1382,12 @@ class SpGroupClient:
         # exchange only; reading the session never blocks.
         self._refresh_lock = threading.Lock()
         self._clock = clock or SystemClock()
+        # The reads the last poll made and what each one answered with, kept so
+        # a sensor that went unavailable keeps a reason the diagnostics
+        # download can show. Optional reads run on the poll's own threads, so
+        # the map needs the lock the session exchange uses.
+        self._reads_lock = threading.Lock()
+        self._read_failures: dict[str, str] = {}
 
     @property
     def clock(self) -> Clock:
@@ -1421,6 +1405,22 @@ class SpGroupClient:
         session = _session_from_oauth(mapping, fallback_refresh)
         self._session = session
         return session
+
+    @property
+    def read_failures(self) -> dict[str, str]:
+        """The last poll's failed optional reads, keyed by the read that failed.
+
+        A read the account is not enrolled for answers 404 and is not in here:
+        that is the steady state, and a list of every account's missing
+        enrollments would be noise. What is in here is a read that broke, which
+        is the difference between "no EV charger" and "the EV read is failing".
+        """
+        with self._reads_lock:
+            return dict(sorted(self._read_failures.items()))
+
+    def _note_read_failure(self, label: str, reason: str) -> None:
+        with self._reads_lock:
+            self._read_failures[label] = reason
 
     def login(self, username: str, password: str) -> Session:
         cooldown = _login_cooldown(username, self._clock)
@@ -1676,6 +1676,10 @@ class SpGroupClient:
         utility fails the poll; every other read that errors skips the
         sensors it feeds.
         """
+        # Each poll reports on itself: last cycle's failures say nothing about
+        # this one, and a read that recovered must not keep warning.
+        with self._reads_lock:
+            self._read_failures.clear()
         session = self.ensure_session()
         try:
             return self._fetch_usage_with(session)
@@ -1719,6 +1723,7 @@ class SpGroupClient:
         timeout: int = OPTIONAL_HTTP_TIMEOUT_SECONDS,
     ) -> HttpResponse | None:
         """Send a read the poll can do without: any failure logs and yields None."""
+        label = _read_label(method, url)
         try:
             response = self._transport.request(
                 method,
@@ -1729,13 +1734,31 @@ class SpGroupClient:
             )
         except TransportError as exc:
             _LOGGER.warning("skipping optional read: %s", exc)
+            self._note_read_failure(label, _safe_text(exc, TRANSPORT_ERROR_CHARS))
             return None
         if response.status >= 400:
-            # The status on its own, at the level that says how much it matters:
-            # a 5xx takes the sensors it feeds away, a 4xx is the account not
-            # being enrolled for the service. _optional_json adds the server's
-            # own message for this same response.
-            _log_optional_status(_request_label(url), response.status)
+            # The response arrived, so this is the one line that names the read.
+            # A 404 is the account not being enrolled for the service and a
+            # scope the grant does not cover is the account not using it: both
+            # are the steady state, and both stay at debug. Anything else took
+            # the sensors this read feeds away, so it warns and is kept.
+            absent = response.status in OPTIONAL_ABSENT_STATUSES or _scope_denied(
+                response
+            )
+            if absent:
+                _LOGGER.debug(
+                    "optional read %s returned HTTP %s", label, response.status
+                )
+            else:
+                _LOGGER.warning(
+                    "optional read %s returned HTTP %s%s",
+                    label,
+                    response.status,
+                    _server_message(response),
+                )
+                self._note_read_failure(
+                    label, f"HTTP {response.status}{_server_message(response)}"
+                )
         return response
 
     def _optional_get(
@@ -1750,7 +1773,10 @@ class SpGroupClient:
         )
         if response is None:
             return None
-        return _optional_json(response, _read_label("GET", url))
+        label = _read_label("GET", url)
+        return _optional_json(
+            response, label, lambda reason: self._note_read_failure(label, reason)
+        )
 
     def _optional_post(
         self,
@@ -1765,7 +1791,10 @@ class SpGroupClient:
         response = self._optional_response("POST", url, headers, payload, timeout)
         if response is None:
             return None
-        return _optional_json(response, _read_label("POST", url))
+        label = _read_label("POST", url)
+        return _optional_json(
+            response, label, lambda reason: self._note_read_failure(label, reason)
+        )
 
     def _fetch_usage_with(self, session: Session) -> UsageReadings:
         me_response = self._jarvis_get(session, JARVIS_ME_PATH)
@@ -1928,7 +1957,7 @@ class SpGroupClient:
         )
         if response is None:
             return None, None, None
-        if _eva_scope_denied(response):
+        if _scope_denied(response):
             # A 403 the host attributes to the grant, not to an enrollment. The
             # generic optional-read line files it as the expected "not signed up"
             # case, which hides the one thing worth acting on: a token that will
@@ -1939,8 +1968,11 @@ class SpGroupClient:
                 EVA_LATEST_SESSION_PATH,
             )
             return None, None, None
+        label = _read_label("GET", eva_url)
         ev_session = _parse_ev_session(
-            _optional_json(response, _read_label("GET", eva_url))
+            _optional_json(
+                response, label, lambda reason: self._note_read_failure(label, reason)
+            )
         )
         history_qs = urlencode({"offSet": "0", "pageSize": "5"})
         history_path = f"{EVA_CHARGE_HISTORY_PATH}?{history_qs}"
@@ -2003,7 +2035,12 @@ class SpGroupClient:
         )
         if response is None:
             return None
-        return _parse_tariff(_optional_json(response, _read_label("GET", url)))
+        label = _read_label("GET", url)
+        return _parse_tariff(
+            _optional_json(
+                response, label, lambda reason: self._note_read_failure(label, reason)
+            )
+        )
 
     def _fetch_ppms(
         self, session: Session, premise: PremiseInfo

@@ -161,7 +161,8 @@ Bill pay, GIRO setup, UniDollar pay, add card, start/stop EV charge, meter-readi
 - **Too many sign-in attempts:** the client refused a password login within 60 seconds of a rejected one. Wait it out; the password is not the problem.
 - **No Energy statistics:** wait for the first poll, hard-refresh Energy settings, then pick **SP Group electricity** (`sp_group:{premise_id}_electricity`), not a sensor.
 - **Missing optional sensor after upgrade:** wait for the next poll. New keys are added without a reload.
-- **Entities unavailable after a failed poll:** the reason is the `last_error` field in the config entry diagnostics, and the dependency that failed is named in the warning it logged. Set `logger: custom_components.sp_group` to debug for the per-request status and duration of each poll.
+- **Entities unavailable after a failed poll:** the config entry diagnostics carry `last_error` (why the poll gave up), `last_poll_ms` and `last_success` (how long it took and when it last worked), and `failed_reads` (the optional read that took a sensor down, keyed by the read that failed). Set `logger: custom_components.sp_group` to debug for the per-request status and duration of each poll.
+- **An optional sensor is missing and no error was logged:** the poll reports 404 for a read the account is not enrolled for, and a 403 for a scope its grant does not cover. Both are the steady state and appear in no field; `failed_reads` is empty.
 
 ## Examples
 

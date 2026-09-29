@@ -22,14 +22,14 @@ Last reviewed: 2026-09-29.
 | R2 | Response bodies are read without a size limit (`client.py:170`, `client.py:173`) | Memory exhaustion of the Home Assistant process, so every integration goes down | Low: needs a hostile or compromised upstream host | G2 |
 | R3 | Upstream-controlled error text reaches the HA log and the user-facing error dialog (`client.py:231`, `const.py:142`, `__init__.py:57`) | Log forging, terminal escape sequences in a log viewer, misleading the operator into a wrong credential action | Low: needs a hostile or compromised upstream host | G3 |
 | R4 | Password logins are retried with no backoff (`config_flow.py:47`, `coordinator.py:101`) | Auth0 bot detection locks the account out (`README.md:134`), a self-inflicted denial of service | Medium: triggered by ordinary use, reauth loops, or a hostile upstream | G4 |
-| R5 | The client presents itself as the official Android app (`const.py:88`) and ships a hardcoded public client id (`const.py:40`) | Upstream policy or detection treats the account as abuse; a client-id change breaks every install at once | Medium: a change upstream, not an attack | G5 |
-| R6 | Premise address, account number, bill amounts, and EV charge history are exposed as entity attributes and recorder statistics to every HA user of the instance (`sensor.py:114`, `coordinator.py:197`) | Household occupancy, consumption pattern, and billing data leak to any other user of the HA instance, including a guest user | Medium: any HA account is enough | Accepted; the integration has no per-entity authorization to add |
-| R7 | The paired-FCU read issues one request per `thingName` the upstream returns (`client.py:1460`) | A long list of FCU names stalls the poll executor for the sum of the per-request timeouts | Low: needs a hostile or compromised upstream | G6 |
+| R5 | The client presents itself as the official Android app (`const.py:103`) and ships a hardcoded public client id (`const.py:47`) | Upstream policy or detection treats the account as abuse; a client-id change breaks every install at once | Medium: a change upstream, not an attack | G5 |
+| R6 | Premise address, account number, bill amounts, and EV charge history are exposed as entity attributes and recorder statistics to every HA user of the instance (`sensor.py:117`, `coordinator.py:270`) | Household occupancy, consumption pattern, and billing data leak to any other user of the HA instance, including a guest user | Medium: any HA account is enough | Accepted; the integration has no per-entity authorization to add |
+| R7 | The paired-FCU read issues one request per `thingName` the upstream returns (`client.py:1913`) | A long list of FCU names stalls the poll executor for the sum of the per-request timeouts | Low: needs a hostile or compromised upstream | G6 |
 
 Mitigations that are genuinely in the code, verified against the claim:
 TLS certificate verification uses the stdlib default context
-(`client.py:166`), so no host is reachable without a valid chain. Diagnostics
-omit the password and every token (`diagnostics.py:21`); the README claim at
+(`client.py:225`), so no host is reachable without a valid chain. Diagnostics
+omit the password and every token (`diagnostics.py:34`); the README claim at
 `README.md:125` is accurate. No credential, token, or response body is passed
 to `print` or the logger by path; the only credential-echoing script reads
 `SP_USERNAME`/`SP_PASSWORD` from the environment rather than argv
@@ -43,12 +43,12 @@ to `print` or the logger by path; the only credential-echoing script reads
 | Config flow: MFA code (TOTP or out-of-band) | HA operator input | `config_flow.py:102` |
 | Reauth and reconfigure flows | HA operator input | `config_flow.py:208`, `config_flow.py:222` |
 | Options flow: electricity price | HA operator input | `config_flow.py:64` |
-| Config entry storage, rewritten on every token change | Local file write | `coordinator.py:112` |
-| Coordinator poll, every 30 minutes | Scheduled job | `coordinator.py:53`, `const.py:87` |
+| Config entry storage, rewritten on every token change | Local file write | `coordinator.py:211` |
+| Coordinator poll, every 30 minutes | Scheduled job | `coordinator.py:66`, `const.py:87` |
 | Diagnostics download | HA admin API | `diagnostics.py:14` |
-| Recorder statistics writes | Local database write | `coordinator.py:197` |
+| Recorder statistics writes | Local database write | `coordinator.py:270` |
 | `SP_USERNAME` / `SP_PASSWORD` environment variables | CLI input | `scripts/live_api.py:21` |
-| HTTPS responses from `identity.spdigital.sg`, `b2c.api.spdigital.sg`, `public.api.spdigital.sg`, `identity.spdigital.auth0.com` | Remote input, parsed | `client.py:165`, `const.py:8` |
+| HTTPS responses from `identity.spdigital.sg`, `b2c.api.spdigital.sg`, `public.api.spdigital.sg`, `identity.spdigital.auth0.com` | Remote input, parsed | `client.py:349`, `const.py:8` |
 | CI on pull request | Build-time input | `.github/workflows/ci.yml:5` |
 
 There is no listener, no webhook, no service call, no file upload parser, and
@@ -90,9 +90,9 @@ config entry update) is within the operator's own instance.
 - Access, id, and refresh tokens, all stored on the config entry
   (`client.py:371`); the refresh token outlives a restart (`README.md:125`).
 - Premise identity: address, account number, premise id, account status
-  (`models.py`, exposed via `sensor.py:114`).
+  (`models.py`, exposed via `sensor.py:117`).
 - Financial data: billed amounts, payables, PPMS credit, EV wallet balance
-  and charge receipts (`coordinator.py:197` writes them to statistics).
+  and charge receipts (`coordinator.py:270` writes them to statistics).
 - The Home Assistant process itself: availability, since it is the only
   compute this component holds (R2, R7).
 
@@ -110,7 +110,7 @@ recorded by this component, so a credential change leaves no local trace.
 threat: the password and both tokens travel to the identity host on every
 login and refresh, and the id token travels to the b2c host as the
 `X-id-token` header (`const.py:86`). TLS with the default context
-(`client.py:166`) is the only control on that path. Spoofing of the SP Group
+(`client.py:225`) is the only control on that path. Spoofing of the SP Group
 servers is prevented by certificate verification; impersonation in the other
 direction is R5.
 
@@ -118,14 +118,14 @@ direction is R5.
 injection (R3) and denial of service through oversized bodies (R2) and
 request fan-out (R7). Tampering is limited: the responses feed sensor values
 and statistics, so a hostile upstream can write false meter readings into the
-long-term statistics database (`coordinator.py:197`), and those become
+long-term statistics database (`coordinator.py:270`), and those become
 permanent history that later exports trust. The client does not sign or
 verify anything the upstream returns beyond TLS.
 
 **Process to storage and recorder.** Information disclosure: every HA user
 and every recorder query sees premise address, account number, and billed
 amounts (R6). The diagnostics endpoint is the one place the design is right
-(`diagnostics.py:21`).
+(`diagnostics.py:34`).
 
 **Repository to install.** Tampering: pull-request CI runs the contributor's
 code with repository token access, which is the ordinary GitHub Actions risk,
@@ -146,7 +146,7 @@ declaration (`manifest.json`) is a runtime coupling, not an attack surface.
   `const.py:85`), so the inconsistency is local, not a missing idea.
 - G4: no delay or cap between password-login attempts.
 - G5: upstream-identity impersonation (R5).
-- G6: unbounded per-`thingName` FCU fan-out (`client.py:1460`).
+- G6: unbounded per-`thingName` FCU fan-out (`client.py:1913`).
 
 Each gap is a finding for a vulnerability review to fix, with a test. This
 document records them; it does not change code.
@@ -155,7 +155,7 @@ document records them; it does not change code.
 
 - A user with any HA account on the instance reads `sp_group` attributes and
   the recorder database and learns the household's address, account number,
-  and billed consumption (`sensor.py:114`, `coordinator.py:197`). There is no
+  and billed consumption (`sensor.py:117`, `coordinator.py:270`). There is no
   per-entity authorization in this design to lift.
 - A hostile upstream returns a four-megabyte body or eight hundred FCU names;
   the poll stalls or the process grows, and no integration on the instance
