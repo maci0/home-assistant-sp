@@ -1,7 +1,5 @@
 """Energy, water, gas, and account sensors."""
 
-# mypy: ignore-errors
-
 from __future__ import annotations
 
 from homeassistant.components.sensor import (
@@ -55,10 +53,15 @@ async def async_setup_entry(
 class SpGroupSensor(CoordinatorEntity[SpGroupCoordinator], SensorEntity):
     _attr_has_entity_name = True
     _attr_attribution = ATTRIBUTION
+    # CoordinatorEntity comes from Home Assistant and is untyped here, so state
+    # the coordinator type it stores rather than reading it back as Any.
+    coordinator: SpGroupCoordinator
 
     def __init__(self, coordinator: SpGroupCoordinator, spec: SensorSpec) -> None:
         super().__init__(coordinator)
         self._key = spec.key
+        # Cleared when the coordinator no longer lists this key.
+        self._spec: SensorSpec | None
         usage = coordinator.data
         premise_id = usage.premise_id if usage else "unknown"
         address = usage.premise.address if usage else None

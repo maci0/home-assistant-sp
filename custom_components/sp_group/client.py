@@ -1270,16 +1270,16 @@ _LOGIN_FAILURE_LOCK = threading.Lock()
 _LOGIN_FAILURES: dict[str, float] = {}
 
 
-def _login_cooldown(username: str) -> float:
+def _login_cooldown(username: str, clock: Clock) -> float:
     """Seconds left on the username's cooldown; 0 when a login may be attempted."""
     with _LOGIN_FAILURE_LOCK:
         failed_at = _LOGIN_FAILURES.get(fold_text(username))
     if failed_at is None:
         return 0.0
-    return max(0.0, LOGIN_RETRY_COOLDOWN_SECONDS - (time.monotonic() - failed_at))
+    return max(0.0, LOGIN_RETRY_COOLDOWN_SECONDS - (clock.monotonic() - failed_at))
 
 
-def _note_login_failure(username: str) -> None:
+def _note_login_failure(username: str, clock: Clock) -> None:
     """Start the cooldown, dropping the entries that already expired.
 
     The dict is module-level and lives as long as the Home Assistant process,
@@ -1288,7 +1288,7 @@ def _note_login_failure(username: str) -> None:
     write bounds the map to the usernames that failed within one cooldown
     window, with no separate timer to keep alive.
     """
-    now = time.monotonic()
+    now = clock.monotonic()
     with _LOGIN_FAILURE_LOCK:
         for name, failed_at in tuple(_LOGIN_FAILURES.items()):
             if now - failed_at >= LOGIN_RETRY_COOLDOWN_SECONDS:
@@ -1327,7 +1327,7 @@ class SpGroupClient:
         return self._session
 
     def login(self, username: str, password: str) -> Session:
-        cooldown = _login_cooldown(username)
+        cooldown = _login_cooldown(username, self._clock)
         if cooldown > 0:
             raise AuthError(
                 "too_many_attempts",
@@ -1349,7 +1349,7 @@ class SpGroupClient:
             # host being down and throttling it would not help the user. An MFA
             # challenge is not a rejection at all: the password was right.
             if exc.error != "mfa_required":
-                _note_login_failure(username)
+                _note_login_failure(username, self._clock)
             raise
         _clear_login_failures(username)
         session = _session_from_oauth(mapping, None)

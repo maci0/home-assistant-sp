@@ -68,6 +68,16 @@ files = [
     "tests",
 ]
 
+# Home Assistant and voluptuous ship no type information and are provided by
+# the Home Assistant runtime, not installed here.
 [[tool.mypy.overrides]]
-module = "homeassistant.*"
+module = ["homeassistant.*", "voluptuous.*"]
 ignore_missing_imports = true
+
+# The modules that import them subclass their entities and decorate methods
+# with their callbacks, so those base classes and decorators are Any. Every
+# other check still runs on those modules.
+[[tool.mypy.overrides]]
+module = "custom_components.sp_group.*"
+disallow_subclassing_any = false
+disallow_untyped_decorators = false

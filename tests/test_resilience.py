@@ -541,22 +541,22 @@ def test_a_rejected_password_blocks_the_next_attempt() -> None:
     assert len(transport.requests) == attempts
 
 
-def test_the_cooldown_expires_and_a_good_password_then_signs_in(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_cooldown_expires_and_a_good_password_then_signs_in() -> None:
     """A mistyped password must not lock the account out for good."""
+    clock = FixedClock()
     with pytest.raises(AuthError):
-        SpGroupClient(transport=FixtureTransport(fail_login=True)).login(
+        SpGroupClient(transport=FixtureTransport(fail_login=True), clock=clock).login(
             "u@example.com", "a"
         )
     with pytest.raises(AuthError) as blocked:
-        SpGroupClient(transport=FixtureTransport()).login("u@example.com", "b")
+        SpGroupClient(transport=FixtureTransport(), clock=clock).login(
+            "u@example.com", "b"
+        )
     assert blocked.value.error == "too_many_attempts"
 
-    later = time.monotonic() + LOGIN_RETRY_COOLDOWN_SECONDS
-    monkeypatch.setattr(time, "monotonic", lambda: later)
-    SpGroupClient(transport=FixtureTransport()).login("u@example.com", "b")
-    assert _login_cooldown("u@example.com") == 0
+    clock.elapsed = LOGIN_RETRY_COOLDOWN_SECONDS
+    SpGroupClient(transport=FixtureTransport(), clock=clock).login("u@example.com", "b")
+    assert _login_cooldown("u@example.com", clock) == 0
 
 
 def test_an_mfa_challenge_is_not_a_rejected_password() -> None:
@@ -567,7 +567,7 @@ def test_an_mfa_challenge_is_not_a_rejected_password() -> None:
             "user@example.com", "secret"
         )
     assert raised.value.error == "mfa_required"
-    assert _login_cooldown("user@example.com") == 0
+    assert _login_cooldown("user@example.com", FixedClock()) == 0
 
 
 def test_expired_login_cooldowns_do_not_stay_in_the_map(
@@ -591,7 +591,7 @@ def test_expired_login_cooldowns_do_not_stay_in_the_map(
     # Only the name that just failed is still throttled; the twenty before it
     # were past their cooldown and could not act on anything.
     assert list(client_module._LOGIN_FAILURES) == ["user20@example.com"]
-    assert _login_cooldown("user0@example.com") == 0
+    assert _login_cooldown("user0@example.com", client_module.SystemClock()) == 0
 
 
 def test_upstream_error_text_is_stripped_and_bounded() -> None:

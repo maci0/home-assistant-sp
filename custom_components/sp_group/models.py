@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Protocol
@@ -25,6 +26,13 @@ class Clock(Protocol):
     def timestamp(self) -> int:
         """Whole seconds since the epoch, for OAuth ``expires_at`` compare."""
 
+    def monotonic(self) -> float:
+        """Seconds from an arbitrary origin, for measuring intervals only.
+
+        The sign-in cooldown is stored as such an interval, so a test can move
+        it without a wall clock, a sleep, or a patched module global.
+        """
+
 
 @dataclass(frozen=True)
 class SystemClock:
@@ -35,6 +43,9 @@ class SystemClock:
 
     def timestamp(self) -> int:
         return int(datetime.now(UTC).timestamp())
+
+    def monotonic(self) -> float:
+        return time.monotonic()
 
 
 @dataclass(frozen=True)

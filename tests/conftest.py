@@ -57,12 +57,16 @@ class FixedClock:
     """A ``Clock`` the test moves by hand instead of the system clock."""
 
     instant: datetime = FIXED_NOW
+    elapsed: float = 0.0
 
     def now(self) -> datetime:
         return self.instant.astimezone(SG_TZ)
 
     def timestamp(self) -> int:
         return int(self.instant.timestamp())
+
+    def monotonic(self) -> float:
+        return self.elapsed
 
 
 def load_fixture(name: str) -> bytes:

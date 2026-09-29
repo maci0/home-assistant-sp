@@ -1,7 +1,5 @@
 """Poll SP Group usage on a fixed interval."""
 
-# mypy: ignore-errors
-
 from __future__ import annotations
 
 import asyncio
@@ -49,7 +47,7 @@ from .mapper import (
     electricity_graph_periods,
     extra_attributes,
 )
-from .models import UsageReadings
+from .models import PeriodReading, UsageReadings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -127,7 +125,9 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
     async def _async_update_data(self) -> UsageReadings:
         started = time.monotonic()
         try:
-            usage = await self.hass.async_add_executor_job(self.client.fetch_usage)
+            usage: UsageReadings = await self.hass.async_add_executor_job(
+                self.client.fetch_usage
+            )
         except (AuthError, UsageError) as exc:
             # Home Assistant logs the raised failure, with the entry it belongs
             # to. This line adds what that message cannot: how long the poll ran
@@ -269,7 +269,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 "unit_of_measurement": unit,
             }
 
-        series: list[tuple[str, tuple, str, str]] = []
+        series: list[tuple[str, tuple[PeriodReading, ...], str, str]] = []
         if usage.electricity is not None:
             periods = electricity_graph_periods(usage)
             series.append(

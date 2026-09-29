@@ -1,7 +1,5 @@
 """Config flow: SP e-account username and password."""
 
-# mypy: ignore-errors
-
 from __future__ import annotations
 
 import logging
@@ -14,7 +12,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 
-from .client import AuthError, SpGroupClient, UsageError, session_entry_data
+from .client import AuthError, Session, SpGroupClient, UsageError, session_entry_data
 from .const import (
     CONF_ELECTRICITY_PRICE,
     CONF_MFA_CODE,
@@ -55,7 +53,7 @@ async def _validate(
     hass: HomeAssistant,
     username: str,
     password: str,
-    exchange: Callable[[SpGroupClient], None] | None = None,
+    exchange: Callable[[SpGroupClient], Session] | None = None,
 ) -> dict[str, str]:
     """Log in (or finish an MFA exchange) and read usage, in one executor job."""
     client = SpGroupClient()
@@ -117,7 +115,10 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=schema)
 
 
-class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's own
+    config_entries.ConfigFlow,
+    domain=DOMAIN,
+):
     VERSION = 1
     # Written by _start_mfa and read only by async_step_mfa, which the flow
     # cannot reach without it.
