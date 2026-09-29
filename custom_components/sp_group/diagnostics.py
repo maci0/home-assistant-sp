@@ -16,13 +16,18 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     coordinator: SpGroupCoordinator = entry.runtime_data
     usage = coordinator.data
+    # The reason the last poll failed, if it did: without it a download taken
+    # while the entities are unavailable says nothing about why.
+    last_error: dict[str, str | None] = {"last_error": coordinator.last_error}
     if usage is None:
         return {
             "has_refresh_token": bool(entry.data.get(CONF_REFRESH_TOKEN)),
             "usage": None,
+            **last_error,
         }
     return {
         "has_refresh_token": bool(entry.data.get(CONF_REFRESH_TOKEN)),
+        **last_error,
         "premise_id": usage.premise_id,
         "has_address": bool(usage.premise.address),
         "has_account_number": bool(usage.premise.account_number),

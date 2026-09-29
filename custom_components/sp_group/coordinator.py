@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from datetime import datetime
@@ -67,6 +68,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         )
         self.client = client
         self.entry = entry
+        self.last_error: str | None = None
         self._stats_lock = asyncio.Lock()
         self._stats_task: asyncio.Task[None] | None = None
         self._stats_stopped = False
@@ -117,23 +119,54 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             await task
 
     async def _async_update_data(self) -> UsageReadings:
+        started = time.monotonic()
         try:
             usage = await self.hass.async_add_executor_job(self.client.fetch_usage)
-        except AuthError as exc:
-            if exc.error == "requires_verification":
-                raise UpdateFailed(
-                    str(exc), **translated_error("requires_verification", exc)
-                ) from exc
-            raise ConfigEntryAuthFailed(
-                str(exc), **translated_error("auth_failed", exc)
-            ) from exc
-        except UsageError as exc:
-            raise UpdateFailed(
-                str(exc), **translated_error("usage_failed", exc)
-            ) from exc
+        except (AuthError, UsageError) as exc:
+            # Home Assistant logs the raised failure, with the entry it belongs
+            # to. This line adds what that message cannot: how long the poll ran
+            # before the read it names gave up. last_error is what the
+            # diagnostics download reports once the entities are unavailable
+            # and the log has scrolled away.
+            self.last_error = str(exc)
+            _LOGGER.debug(
+                "poll for %s failed after %d ms: %s",
+                self.entry.title,
+                round((time.monotonic() - started) * 1000),
+                exc,
+            )
+            raise self._update_error(exc) from exc
+        self.last_error = None
+        _LOGGER.debug(
+            "poll for %s fetched premise %s in %d ms",
+            self.entry.title,
+            usage.premise_id,
+            round((time.monotonic() - started) * 1000),
+        )
         self._persist_session_if_changed()
         self._schedule_stats_import()
         return usage
+
+    @staticmethod
+    def _update_error(
+        exc: AuthError | UsageError,
+    ) -> UpdateFailed | ConfigEntryAuthFailed:
+        """The entry-level failure a rejected read becomes.
+
+        A verification requirement resolves on its own later, so it stays a
+        retried update failure. Every other auth rejection is a verdict on the
+        stored credentials and sends the entry into reauth. A read that never
+        got that far is a transient failure worth retrying.
+        """
+        if isinstance(exc, AuthError):
+            if exc.error == "requires_verification":
+                return UpdateFailed(
+                    str(exc), **translated_error("requires_verification", exc)
+                )
+            return ConfigEntryAuthFailed(
+                str(exc), **translated_error("auth_failed", exc)
+            )
+        return UpdateFailed(str(exc), **translated_error("usage_failed", exc))
 
     def _persist_session_if_changed(self) -> None:
         session = self.client.session
@@ -172,7 +205,9 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             try:
                 await self._async_import_billed_history(usage)
             except Exception:
-                _LOGGER.exception("failed to import billed statistics")
+                _LOGGER.exception(
+                    "failed to import billed statistics for %s", usage.premise_id
+                )
 
     def _imported_through(self, premise_id: str) -> dict[str, datetime]:
         """The newest start already written per statistic id for this premise.

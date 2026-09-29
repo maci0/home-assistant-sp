@@ -19,6 +19,7 @@ import logging
 import math
 import ssl
 import threading
+import time
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -196,6 +197,28 @@ class Transport(Protocol):
     ) -> HttpResponse: ...
 
 
+def _request_label(url: str) -> str:
+    """The request target without its query string.
+
+    Query strings here carry account numbers, thing names, and consumption
+    values, so only the path reaches a log line or an error message.
+    """
+    return url.split("?", 1)[0]
+
+
+def _log_optional_status(path: str, status: int) -> None:
+    """Report an optional read that answered with an error status.
+
+    A 5xx means the dependency is broken and the entities it feeds go
+    unavailable, so it warns. A 4xx means the account has no enrollment for
+    that service, which is the expected steady state and only a debug line.
+    """
+    if status >= 500:
+        _LOGGER.warning("optional read %s returned HTTP %s", path, status)
+    else:
+        _LOGGER.debug("optional read %s returned HTTP %s", path, status)
+
+
 @cache
 def _ssl_context() -> ssl.SSLContext:
     """The verified-certificate context, built once per process.
@@ -245,18 +268,29 @@ class UrllibTransport:
     ) -> HttpResponse:
         request = Request(url, data=body, method=method, headers=dict(headers))
         seconds = HTTP_TIMEOUT_SECONDS if timeout is None else timeout
+        started = time.monotonic()
         try:
             with urlopen(request, timeout=seconds, context=_ssl_context()) as response:
-                return HttpResponse(status=int(response.status), body=response.read())
+                http = HttpResponse(status=int(response.status), body=response.read())
         except HTTPError as exc:
             with exc:
-                return HttpResponse(status=int(exc.code), body=exc.read())
+                http = HttpResponse(status=int(exc.code), body=exc.read())
         except (OSError, HTTPException) as exc:
             # URLError, socket timeout, and TLS failures all land here. Name the
             # call and the timeout so the log says which host stalled the poll.
             raise TransportError(
                 f"{method} {_loggable_url(url)} failed (timeout {seconds}s): {exc}"
             ) from exc
+        # Debug, so the poll's cost per dependency is visible when someone turns
+        # the domain up without filling a normal log with 15 lines a cycle.
+        _LOGGER.debug(
+            "%s %s -> HTTP %s in %d ms",
+            method,
+            _request_label(url),
+            http.status,
+            round((time.monotonic() - started) * 1000),
+        )
+        return http
 
 
 @dataclass(frozen=True)
@@ -1250,14 +1284,16 @@ class SpGroupClient:
         """
         try:
             factor = _pick_mfa_factor(self.list_mfa_authenticators(mfa_token))
-        except (AuthError, UsageError, OSError):
+        except (AuthError, UsageError, OSError) as exc:
+            _LOGGER.debug("mfa factor probe failed, offering TOTP: %s", exc)
             return "totp", None
         authenticator_id = _oob_factor_authenticator_id(factor)
         if authenticator_id is None:
             return "totp", None
         try:
             challenge = self.challenge_mfa(mfa_token, authenticator_id)
-        except (AuthError, UsageError, OSError):
+        except (AuthError, UsageError, OSError) as exc:
+            _LOGGER.debug("mfa challenge failed, offering TOTP: %s", exc)
             return "totp", None
         return _mfa_channel_from_challenge(factor, challenge)
 
@@ -1358,8 +1394,11 @@ class SpGroupClient:
         session = self.ensure_session()
         try:
             return self._fetch_usage_with(session)
-        except AuthError:
+        except AuthError as exc:
             if session.refresh_token:
+                # A read rejected the token it carried. One refresh and one
+                # retry, so the retry itself needs no log of its own.
+                _LOGGER.debug("read rejected the session, refreshing it: %s", exc)
                 session = self.refresh()
                 return self._fetch_usage_with(session)
             raise
@@ -1396,7 +1435,7 @@ class SpGroupClient:
     ) -> HttpResponse | None:
         """Send a read the poll can do without: any failure logs and yields None."""
         try:
-            return self._transport.request(
+            response = self._transport.request(
                 method,
                 url,
                 headers,
@@ -1406,6 +1445,12 @@ class SpGroupClient:
         except TransportError as exc:
             _LOGGER.warning("skipping optional read: %s", exc)
             return None
+        if response.status >= 400:
+            # The response arrived, so no other line names this read: a 5xx takes
+            # the sensors it feeds away, and a 4xx is the account not being
+            # enrolled for the service, which is expected and stays at debug.
+            _log_optional_status(_request_label(url), response.status)
+        return response
 
     def _optional_get(
         self,

@@ -145,6 +145,7 @@ Bill pay, GIRO setup, UniDollar pay, add card, start/stop EV charge, meter-readi
 - **Suspicious request requires verification:** Auth0 bot detection after many password logins. Sign in once in the SP app, wait a few minutes, then reload or reauthenticate.
 - **No Energy statistics:** wait for the first poll, hard-refresh Energy settings, then pick **SP Group electricity** (`sp_group:{premise_id}_electricity`), not a sensor.
 - **Missing optional sensor after upgrade:** wait for the next poll. New keys are added without a reload.
+- **Entities unavailable after a failed poll:** the reason is the `last_error` field in the config entry diagnostics, and the dependency that failed is named in the warning it logged. Set `logger: custom_components.sp_group` to debug for the per-request status and duration of each poll.
 
 ## Examples
 

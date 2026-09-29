@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -25,6 +26,8 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): str,
     }
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _entry_data(client: SpGroupClient, username: str, password: str) -> dict[str, str]:
@@ -168,8 +171,10 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         user_input[CONF_MFA_CODE],
                     )
             except AuthError as exc:
+                _LOGGER.warning("mfa code rejected: %s", exc)
                 errors["base"] = _auth_error_key(exc)
-            except (UsageError, OSError):
+            except (UsageError, OSError) as exc:
+                _LOGGER.warning("mfa step could not read the account: %s", exc)
                 errors["base"] = "cannot_connect"
             else:
                 entry = context["entry"]
@@ -195,8 +200,10 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 mfa = await self._start_mfa(exc, user_input, None)
                 if mfa is not None:
                     return mfa
+                _LOGGER.warning("login rejected during setup: %s", exc)
                 errors["base"] = _auth_error_key(exc)
-            except (UsageError, OSError):
+            except (UsageError, OSError) as exc:
+                _LOGGER.warning("setup could not read the account: %s", exc)
                 errors["base"] = "cannot_connect"
             else:
                 return self.async_create_entry(
@@ -251,8 +258,10 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 mfa = await self._start_mfa(exc, user_input, entry)
                 if mfa is not None:
                     return mfa
+                _LOGGER.warning("login rejected while reauthenticating: %s", exc)
                 errors["base"] = _auth_error_key(exc)
-            except (UsageError, OSError):
+            except (UsageError, OSError) as exc:
+                _LOGGER.warning("reauthentication could not read the account: %s", exc)
                 errors["base"] = "cannot_connect"
             else:
                 await self.async_set_unique_id(user_input[CONF_USERNAME].lower())

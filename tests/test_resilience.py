@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import ssl
 import threading
 import time
@@ -216,6 +217,78 @@ def test_urllib_transport_keeps_http_error_bodies() -> None:
         response = UrllibTransport().request("POST", url, {}, b"{}")
     assert response.status == 403
     assert b"invalid_grant" in response.body
+
+
+class _FakeResponse(BytesIO):
+    """The urlopen result the transport reads, as a context manager."""
+
+    status = 200
+
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+def test_urllib_transport_records_the_call_at_debug(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The one line that says how long a dependency took and what it answered."""
+    monkeypatch.setattr(
+        client_module, "urlopen", lambda *a, **k: _FakeResponse(b'{"account":"12345"}')
+    )
+    with caplog.at_level("DEBUG", logger="custom_components.sp_group.client"):
+        response = UrllibTransport().request(
+            "GET", f"{PUBLIC_HOST}{PRICEPLAN_PATH}?consumption=350", {}, None, timeout=8
+        )
+    assert response.status == 200
+    assert PRICEPLAN_PATH in caplog.text
+    assert "HTTP 200" in caplog.text
+    # The query string and the body stay out: neither helps an operator and
+    # both carry account data.
+    assert "consumption=350" not in caplog.text
+    assert "12345" not in caplog.text
+
+
+def test_optional_read_error_status_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 5xx takes the entities it feeds away, so it must be the one log line."""
+    transport = FixtureTransport(
+        responses={TYCHE_WALLET_PATH: HttpResponse(503, b"{}")}
+    )
+    with caplog.at_level("WARNING"):
+        usage = fixture_client(transport).fetch_usage()
+    assert usage.ev_wallet is None
+    assert TYCHE_WALLET_PATH in caplog.text
+    assert "503" in caplog.text
+
+
+def test_optional_read_not_enrolled_does_not_warn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 4xx is the steady state for an account without that service."""
+    transport = FixtureTransport(
+        responses={TYCHE_WALLET_PATH: HttpResponse(404, b"{}")}
+    )
+    with caplog.at_level("WARNING"):
+        fixture_client(transport).fetch_usage()
+    assert [
+        record for record in caplog.records if record.levelno >= logging.WARNING
+    ] == []
+
+
+def test_optional_read_log_keeps_account_query_parameters_out(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = FixtureTransport(
+        responses={NJORD_HISTORY_PATH: HttpResponse(503, b"{}")}
+    )
+    with caplog.at_level("WARNING"):
+        fixture_client(transport).fetch_usage()
+    assert NJORD_HISTORY_PATH in caplog.text
+    assert "account_numbers" not in caplog.text
 
 
 class RotatingRefreshTransport(FixtureTransport):
