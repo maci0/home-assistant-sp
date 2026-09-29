@@ -285,6 +285,9 @@ def extra_attributes(
             if graph:
                 last = _last_period(graph)
                 attrs["period_count"] = len(graph)
+                if series is not None:
+                    attrs["average_consumption"] = series.average
+                    attrs["comparison"] = series.comparison
                 attrs["ami_half_hour_count"] = len(usage.ami_hourly)
                 attrs["ami_daily_count"] = len(usage.ami_daily)
                 if last is not None:

@@ -259,9 +259,7 @@ class RotatingRefreshTransport(FixtureTransport):
                 "scope": "openid offline_access",
             }
         time.sleep(0.05)
-        return HttpResponse(
-            status=200, body=json.dumps(payload).encode("utf-8")
-        )
+        return HttpResponse(status=200, body=json.dumps(payload).encode("utf-8"))
 
 
 def test_concurrent_fetches_spend_the_refresh_token_once() -> None:

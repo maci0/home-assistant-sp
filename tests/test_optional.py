@@ -126,6 +126,27 @@ def test_eva_sgd_string_rules() -> None:
     assert charge.amount == 12.5
 
 
+def test_eva_last_charge_keeps_a_zero_kwh_receipt() -> None:
+    """0 kWh is a reading (a voided or refunded charge), not a missing one.
+
+    Falling through on a falsy value reported connector_kwh instead, and a
+    receipt with no amount reported no kWh at all, which dropped the sensor.
+    """
+    voided = _parse_ev_last_charge({"data": [{"total_consumption": 0.0}]})
+    assert voided is not None
+    assert voided.kwh == 0.0
+
+    charged = _parse_ev_last_charge(
+        {"data": [{"total_consumption": 0.0, "connector_kwh": 7.5}]}
+    )
+    assert charged is not None
+    assert charged.kwh == 0.0
+
+    without_total = _parse_ev_last_charge({"data": [{"connector_kwh": 7.5}]})
+    assert without_total is not None
+    assert without_total.kwh == 7.5
+
+
 def test_eva_scope_not_found_skips_remaining_eva() -> None:
     transport = FixtureTransport(
         responses={

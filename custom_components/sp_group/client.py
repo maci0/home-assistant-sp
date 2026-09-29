@@ -834,9 +834,11 @@ def _parse_ev_last_charge(body: object) -> EvChargeInfo | None:
     first = rows[0]
     if not isinstance(first, dict):
         return None
-    kwh = _optional_float(first.get("total_consumption")) or _optional_float(
-        first.get("connector_kwh")
-    )
+    # A voided or refunded receipt reports 0 kWh, which is a reading, not an
+    # absent one: only a missing field falls through to connector_kwh.
+    kwh = _optional_float(first.get("total_consumption"))
+    if kwh is None:
+        kwh = _optional_float(first.get("connector_kwh"))
     amount = _eva_sgd(first.get("transaction_amount"))
     if kwh is None and amount is None:
         return None

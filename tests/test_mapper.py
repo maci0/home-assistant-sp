@@ -111,6 +111,10 @@ def test_sensors_match_energy_dashboard_contract() -> None:
     assert elec_attrs["period_count"] == 4
     assert elec_attrs["ami_half_hour_count"] == 4
     assert elec_attrs["last_period_amount"] == pytest.approx(1.0)
+    # The AMI graph has no peer data, so these come from the billed series the
+    # README documents as shared attributes on every usage sensor.
+    assert elec_attrs["average_consumption"] == pytest.approx(180.0)
+    assert elec_attrs["comparison"] == "Your usage is typical."
     assert water_attrs["period_count"] == len(usage.water_periods)
     account_attrs = extra_attributes(usage, SENSOR_KEY_ACCOUNT, FIXED_NOW)
     assert account_attrs["premise_id"] == usage.premise_id
