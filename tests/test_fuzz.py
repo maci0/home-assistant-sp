@@ -50,7 +50,7 @@ from custom_components.sp_group.const import (
 from custom_components.sp_group.mapper import extra_attributes, sensors_from_usage
 from custom_components.sp_group.models import SG_TZ
 
-from .conftest import FixtureTransport, load_fixture
+from .conftest import FIXED_NOW, FixedClock, FixtureTransport, load_fixture
 
 DEFAULT_FUZZ_SEED = 20240315
 FUZZ_SEED = int(os.environ.get("FUZZ_SEED", DEFAULT_FUZZ_SEED))
@@ -197,9 +197,8 @@ def _charts(body: object) -> list[object]:
 def _premise(body: object) -> object:
     if not isinstance(body, dict):
         raise UsageError("me payload is not an object")
-    return client_module._parse_premise(
-        SpGroupClient(transport=FixtureTransport())._select_premise(body)
-    )
+    client = SpGroupClient(transport=FixtureTransport(), clock=FixedClock())
+    return client_module._parse_premise(client._select_premise(body))
 
 
 # (fixture, parser) pairs. Each parser is fed the fixture's decoded body the way
@@ -490,7 +489,7 @@ def test_fuzz_usage_read_survives_a_corrupt_response(marker: str) -> None:
     rng = random.Random(f"{FUZZ_SEED}-{marker}")
     for round_number in range(END_TO_END_ROUNDS):
         transport = MutatingTransport(marker, rng)
-        client = SpGroupClient(transport=transport)
+        client = SpGroupClient(transport=transport, clock=FixedClock())
         client.login("user@example.com", "secret")
         where = f"{marker} seed={FUZZ_SEED} round={round_number}"
         try:
@@ -503,9 +502,10 @@ def test_fuzz_usage_read_survives_a_corrupt_response(marker: str) -> None:
                 f"{json.dumps(transport.mutated)[:2000]}"
             ) from exc
         check_invariants(usage, f"{where} usage")
-        specs = sensors_from_usage(usage)
+        specs = sensors_from_usage(usage, FIXED_NOW)
         check_invariants(specs, f"{where} sensors")
         for spec in specs:
             check_invariants(
-                extra_attributes(usage, spec.key), f"{where} attrs[{spec.key}]"
+                extra_attributes(usage, spec.key, FIXED_NOW),
+                f"{where} attrs[{spec.key}]",
             )

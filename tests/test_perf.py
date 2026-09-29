@@ -22,16 +22,18 @@ from custom_components.sp_group.models import (
 
 ENTITIES = 26
 ROUNDS = 10
+# The instant the synthetic usage is anchored to, and the clock reading the
+# cache is asked to map it with.
+NOW = datetime(2026, 9, 21, 21, 0, tzinfo=SG_TZ)
 
 
 def _usage() -> UsageReadings:
-    now = datetime(2026, 9, 21, 21, 0, tzinfo=SG_TZ)
     hourly = tuple(
-        PeriodReading(start=now - timedelta(minutes=30 * index), amount=0.42)
+        PeriodReading(start=NOW - timedelta(minutes=30 * index), amount=0.42)
         for index in range(8 * 48)
     )
     daily = tuple(
-        PeriodReading(start=now - timedelta(days=index), amount=9.7)
+        PeriodReading(start=NOW - timedelta(days=index), amount=9.7)
         for index in range(60)
     )
     return UsageReadings(
@@ -62,22 +64,24 @@ def test_specs_built_once_per_usage(monkeypatch) -> None:
     builds: list[UsageReadings | None] = []
     real = mapper.sensors_from_usage
 
-    def counting_sensors_from_usage(usage: UsageReadings | None):
+    def counting_sensors_from_usage(
+        usage: UsageReadings | None, now: datetime
+    ) -> list[mapper.SensorSpec]:
         builds.append(usage)
-        return real(usage)
+        return real(usage, now)
 
     monkeypatch.setattr(mapper, "sensors_from_usage", counting_sensors_from_usage)
     cache = SensorSpecCache()
     usage = _usage()
 
     for _ in range(ENTITIES):
-        specs = cache.specs(usage)
+        specs = cache.specs(usage, NOW)
     assert len(builds) == 1
-    assert {spec.key for spec in specs} == {spec.key for spec in real(usage)}
+    assert {spec.key for spec in specs} == {spec.key for spec in real(usage, NOW)}
 
-    cache.specs(_usage())
+    cache.specs(_usage(), NOW)
     assert len(builds) == 2, "a new poll must invalidate the cache"
-    assert cache.specs(None) == ()
+    assert cache.specs(None, NOW) == ()
     assert len(builds) == 3
 
 
@@ -85,18 +89,18 @@ def test_cached_reads_cost_far_less_cpu_than_rebuilds() -> None:
     """CPU-time ratio, not wall clock: measured ~140x, asserted at 5x."""
     usage = _usage()
     cache = SensorSpecCache()
-    cache.specs(usage)
+    cache.specs(usage, NOW)
 
     start = time.process_time()
     for _ in range(ROUNDS):
         for _ in range(ENTITIES):
-            cache.specs(usage)
+            cache.specs(usage, NOW)
     cached = time.process_time() - start
 
     start = time.process_time()
     for _ in range(ROUNDS):
         for _ in range(ENTITIES):
-            mapper.sensors_from_usage(usage)
+            mapper.sensors_from_usage(usage, NOW)
     rebuilt = time.process_time() - start
 
     assert rebuilt > 0

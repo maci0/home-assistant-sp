@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -51,6 +50,7 @@ from custom_components.sp_group.const import (
 from custom_components.sp_group.models import SG_TZ, PeriodReading
 
 from .conftest import (
+    FixedClock,
     FixtureTransport,
     billed_totals_from_charts_payload,
     fixture_client,
@@ -61,7 +61,7 @@ from .conftest import (
 def test_login_returns_access_token_from_fixture() -> None:
     token_payload = json.loads(load_fixture("oauth_token_success.json"))
     transport = FixtureTransport()
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
     session = client.login("user@example.com", "secret")
     assert session.access_token == token_payload["access_token"]
     assert session.id_token == token_payload["id_token"]
@@ -70,7 +70,7 @@ def test_login_returns_access_token_from_fixture() -> None:
 
 def test_login_sends_auth0_password_realm_body() -> None:
     transport = FixtureTransport()
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
     client.login("user@example.com", "secret")
     recorded = transport.requests[0]
     assert recorded.method == "POST"
@@ -98,7 +98,7 @@ def test_login_scope_includes_me_rbac() -> None:
 
 def test_mfa_challenge_exposes_token_and_submit_sends_otp() -> None:
     transport = FixtureTransport(require_mfa=True, mfa_success=True)
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
 
     with pytest.raises(AuthError) as raised:
         client.login("user@example.com", "secret")
@@ -123,7 +123,7 @@ def test_mfa_challenge_exposes_token_and_submit_sends_otp() -> None:
 
 def test_mfa_oob_lists_challenges_and_submits_binding_code() -> None:
     transport = FixtureTransport(mfa_oob=True, mfa_success=True)
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
 
     with pytest.raises(AuthError) as raised:
         client.login("user@example.com", "secret")
@@ -184,7 +184,7 @@ def test_list_mfa_authenticators_parses_bare_array_response() -> None:
     # {"authenticators": [...]}. The old parser coerced it to {} and listed
     # zero factors, so no OOB challenge (SMS) was ever fired.
     transport = FixtureTransport(authenticators_bare=True)
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
 
     authenticators = client.list_mfa_authenticators("mfa-token")
 
@@ -385,7 +385,7 @@ def test_mfa_channel_totp_for_non_oob_factor() -> None:
 
 def test_challenge_mfa_rejects_non_prompt_binding_method() -> None:
     transport = FixtureTransport(mfa_oob=True, mfa_challenge_binding="enter_code")
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
 
     with pytest.raises(AuthError) as raised:
         client.login("user@example.com", "secret")
@@ -402,7 +402,7 @@ def test_challenge_mfa_rejects_non_prompt_binding_method() -> None:
 
 def test_prepare_mfa_challenges_sms_and_returns_oob() -> None:
     transport = FixtureTransport(mfa_oob=True)
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
 
     channel, oob_code = client.prepare_mfa("mfa-token")
 
@@ -416,7 +416,7 @@ def test_prepare_mfa_challenges_sms_and_returns_oob() -> None:
 
 def test_prepare_mfa_falls_back_when_binding_is_not_prompt() -> None:
     transport = FixtureTransport(mfa_oob=True, mfa_challenge_binding="enter_code")
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
 
     channel, oob_code = client.prepare_mfa("mfa-token")
 
@@ -430,10 +430,11 @@ def test_stored_session_skips_password_login() -> None:
         access_token=token_payload["access_token"],
         id_token=token_payload["id_token"],
         refresh_token=token_payload["refresh_token"],
-        expires_at=int(time.time()) + 3600,
+        scope=token_payload["scope"],
+        expires_at=FixedClock().timestamp() + 3600,
     )
     transport = FixtureTransport()
-    client = SpGroupClient(transport=transport, session=session)
+    client = SpGroupClient(transport=transport, session=session, clock=FixedClock())
     client.fetch_usage()
     assert all(not req.url.endswith(OAUTH_TOKEN_PATH) for req in transport.requests)
 
@@ -448,7 +449,7 @@ def test_expired_stored_session_refreshes_instead_of_sending_the_password() -> N
             id_token="stale-id",
             refresh_token=token_payload["refresh_token"],
             scope=token_payload["scope"],
-            expires_at=int(time.time()) - 1,
+            expires_at=FixedClock().timestamp() - 1,
         ),
     )
 
@@ -489,6 +490,7 @@ def test_refresh_sends_refresh_token_grant() -> None:
     token_payload = json.loads(load_fixture("oauth_token_success.json"))
     transport = FixtureTransport()
     client = SpGroupClient(
+        clock=FixedClock(),
         transport=transport,
         session=Session(
             access_token=token_payload["access_token"],
@@ -722,7 +724,7 @@ def test_me_forbidden_uses_server_error_description() -> None:
 def test_invalid_credentials_raise_auth_error() -> None:
     fail_payload = json.loads(load_fixture("oauth_token_invalid_grant.json"))
     transport = FixtureTransport(fail_login=True)
-    client = SpGroupClient(transport=transport)
+    client = SpGroupClient(transport=transport, clock=FixedClock())
     with pytest.raises(AuthError) as exc_info:
         client.login("user@example.com", "wrong")
     assert exc_info.value.error == fail_payload["error"]

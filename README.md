@@ -195,6 +195,17 @@ from the environment, fixes the mutation sequence, so a failure names the seed
 and round that produced it; paste an offending payload into a case in `tests/`
 to keep it as a regression.
 
+### Determinism
+
+A poll reads the network through `UrllibTransport` and the clock through the
+`Clock` protocol in `models.py`; nothing else in the client, mapper, or history
+layer calls `urlopen` or reads the system clock. Tests pass `FixedClock`
+(`tests/conftest.py`), so the same fixtures and the same instant give the same
+readings, the same AMI window, and the same sensor values on every run.
+`tests/test_replay.py` holds that in place and moves the clock to show which
+values follow it. Add a new time-dependent field to that path by threading the
+`now` argument the mapper already takes, not by calling `datetime.now`.
+
 ### Modules
 
 `custom_components/sp_group/` is layered, and `tests/test_layering.py` enforces

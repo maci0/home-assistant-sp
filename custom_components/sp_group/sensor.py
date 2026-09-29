@@ -20,7 +20,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ATTRIBUTION, DOMAIN
 from .coordinator import SpGroupCoordinator
-from .mapper import SensorSpec, extra_attributes
+from .mapper import SensorSpec
 
 PARALLEL_UPDATES = 0
 
@@ -112,7 +112,4 @@ class SpGroupSensor(CoordinatorEntity[SpGroupCoordinator], SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        usage = self.coordinator.data
-        if usage is None:
-            return {}
-        return extra_attributes(usage, self._key)
+        return self.coordinator.extra_attributes(self._key)

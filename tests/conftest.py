@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -28,16 +29,40 @@ from custom_components.sp_group.const import (
     NJORD_PAYABLES_PATH,
     OAUTH_TOKEN_PATH,
 )
+from custom_components.sp_group.models import SG_TZ
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+# The instant every test run pretends it is: a day inside the recorded AMI
+# window in jarvis_ami_day.json. AMI windows, "today" buckets, and token expiry
+# are all derived from it, so a run is reproducible whatever the wall clock
+# says when it starts.
+FIXED_NOW = datetime(2026, 8, 2, 12, 0, tzinfo=SG_TZ)
+
+
+@dataclass
+class FixedClock:
+    """A ``Clock`` the test moves by hand instead of the system clock."""
+
+    instant: datetime = FIXED_NOW
+
+    def now(self) -> datetime:
+        return self.instant.astimezone(SG_TZ)
+
+    def timestamp(self) -> int:
+        return int(self.instant.timestamp())
 
 
 def load_fixture(name: str) -> bytes:
     return (FIXTURES / name).read_bytes()
 
 
-def fixture_client(transport: FixtureTransport | None = None) -> SpGroupClient:
-    client = SpGroupClient(transport=transport or FixtureTransport())
+def fixture_client(
+    transport: FixtureTransport | None = None, clock: FixedClock | None = None
+) -> SpGroupClient:
+    client = SpGroupClient(
+        transport=transport or FixtureTransport(), clock=clock or FixedClock()
+    )
     client.login("user@example.com", "secret")
     return client
 

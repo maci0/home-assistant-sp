@@ -19,7 +19,6 @@ import logging
 import math
 import ssl
 import threading
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -91,6 +90,7 @@ from .models import (
     SG_TZ,
     BillDeliveryInfo,
     BillInfo,
+    Clock,
     EvChargeInfo,
     EvSessionInfo,
     EvUnpaidInfo,
@@ -105,6 +105,7 @@ from .models import (
     PayableInfo,
     PeriodReading,
     PremiseInfo,
+    SystemClock,
     TariffInfo,
     UsageReadings,
     UtilitySeries,
@@ -213,18 +214,18 @@ class Session:
     refresh_token: str | None
     expires_at: int | None = None
 
-    def is_expired(self) -> bool:
+    def is_expired(self, epoch: int) -> bool:
         if self.expires_at is None:
             return False
-        return int(time.time()) >= self.expires_at - TOKEN_EXPIRY_BUFFER_SECONDS
+        return epoch >= self.expires_at - TOKEN_EXPIRY_BUFFER_SECONDS
 
 
-def _session_is_live(session: Session | None) -> TypeGuard[Session]:
+def _session_is_live(session: Session | None, epoch: int) -> TypeGuard[Session]:
     """A session that can still authenticate a read, so needs no refresh."""
     return (
         session is not None
         and bool(session.access_token)
-        and not session.is_expired()
+        and not session.is_expired(epoch)
     )
 
 
@@ -1034,6 +1035,7 @@ class SpGroupClient:
         self,
         transport: Transport | None = None,
         session: Session | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self._transport = transport or UrllibTransport()
         self._session = session
@@ -1042,6 +1044,12 @@ class SpGroupClient:
         # discard a session that is already good. The lock serializes the
         # exchange only; reading the session never blocks.
         self._refresh_lock = threading.Lock()
+        self._clock = clock or SystemClock()
+
+    @property
+    def clock(self) -> Clock:
+        """The clock every time-dependent read in this client goes through."""
+        return self._clock
 
     @property
     def session(self) -> Session | None:
@@ -1202,7 +1210,7 @@ class SpGroupClient:
 
     def ensure_session(self) -> Session:
         current = self._session
-        if _session_is_live(current):
+        if _session_is_live(current, self._clock.timestamp()):
             return current
         if current is None or not current.refresh_token:
             raise AuthError("invalid_grant", "login credentials required")
@@ -1210,7 +1218,7 @@ class SpGroupClient:
             # A concurrent fetch may have refreshed while this one waited; take
             # that session rather than spend the retired refresh token again.
             current = self._session
-            if _session_is_live(current):
+            if _session_is_live(current, self._clock.timestamp()):
                 return current
             try:
                 return self._exchange(current)
@@ -1548,7 +1556,7 @@ class SpGroupClient:
     ) -> tuple[tuple[PeriodReading, ...], tuple[PeriodReading, ...]]:
         if premise.ami_elec is not True:
             return (), ()
-        now = datetime.now(SG_TZ)
+        now = self._clock.now()
         day_end = now.replace(hour=23, minute=59, second=59, microsecond=0)
         day_start = (now - timedelta(days=AMI_HALF_HOUR_DAYS - 1)).replace(
             hour=0, minute=0, second=0, microsecond=0

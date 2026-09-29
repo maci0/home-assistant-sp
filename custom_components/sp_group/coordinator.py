@@ -42,7 +42,12 @@ from .history import (
     monthly_bill_points,
     unimported,
 )
-from .mapper import SensorSpec, SensorSpecCache, electricity_graph_periods
+from .mapper import (
+    SensorSpec,
+    SensorSpecCache,
+    electricity_graph_periods,
+    extra_attributes,
+)
 from .models import UsageReadings
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,7 +78,16 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
     @property
     def sensor_specs(self) -> tuple[SensorSpec, ...]:
         """The current sensor specs, built once per poll for every entity."""
-        return self._spec_cache.specs(self.data)
+        return self._spec_cache.specs(self.data, self.now)
+
+    @property
+    def now(self) -> datetime:
+        """The clock reading the poll ran at, shared by specs and attributes."""
+        return self.client.clock.now()
+
+    def extra_attributes(self, key: str) -> dict[str, object]:
+        usage = self.data
+        return {} if usage is None else extra_attributes(usage, key, self.now)
 
     @property
     def electricity_price(self) -> float | None:

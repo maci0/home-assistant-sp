@@ -32,7 +32,7 @@ from custom_components.sp_group.const import (
 )
 from custom_components.sp_group.mapper import sensors_from_usage
 
-from .conftest import FixtureTransport, fixture_client
+from .conftest import FIXED_NOW, FixtureTransport, fixture_client
 
 
 def test_greenup_and_unread_appear_when_payloads_exist() -> None:
@@ -88,7 +88,7 @@ def test_greenup_and_unread_appear_when_payloads_exist() -> None:
     assert usage.unread_notifications == 3
     assert usage.ev_last_charge is not None
     assert usage.ev_last_charge.kwh == 18.5
-    by_key = {spec.key: spec for spec in sensors_from_usage(usage)}
+    by_key = {spec.key: spec for spec in sensors_from_usage(usage, FIXED_NOW)}
     assert by_key[SENSOR_KEY_GREENUP_POINTS].native_value == 12
     assert by_key[SENSOR_KEY_UNREAD_NOTIFICATIONS].native_value == 3
     assert by_key[SENSOR_KEY_EV_LAST_CHARGE].native_value == 18.5
@@ -200,7 +200,7 @@ def test_paired_fcus_each_get_a_sensor() -> None:
 
     usage = fixture_client(TwoFcu()).fetch_usage()
     assert len(usage.fcus) == 2
-    by_key = {spec.key: spec for spec in sensors_from_usage(usage)}
+    by_key = {spec.key: spec for spec in sensors_from_usage(usage, FIXED_NOW)}
     living = by_key["fcu_tengah_living"]
     bed = by_key["fcu_tengah_bed"]
     assert living.native_value == 24.5

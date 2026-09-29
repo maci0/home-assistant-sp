@@ -36,7 +36,7 @@ from custom_components.sp_group.const import (
 )
 from custom_components.sp_group.models import UsageReadings
 
-from .conftest import FixtureTransport, fixture_client
+from .conftest import FixedClock, FixtureTransport, fixture_client
 
 # Paths whose host may be down without costing the caller its billed readings.
 OPTIONAL_PATHS = [
@@ -98,6 +98,7 @@ def test_tariff_host_failure_leaves_tariff_unset() -> None:
 def test_identity_host_outage_is_not_reported_as_bad_credentials() -> None:
     """A 5xx from Auth0 must not push Home Assistant into a reauth flow."""
     client = SpGroupClient(
+        clock=FixedClock(),
         transport=FixtureTransport(
             responses={OAUTH_TOKEN_PATH: HttpResponse(503, b"<html>gateway</html>")}
         )
@@ -109,6 +110,7 @@ def test_identity_host_outage_is_not_reported_as_bad_credentials() -> None:
 
 def test_rate_limited_login_is_not_reported_as_bad_credentials() -> None:
     client = SpGroupClient(
+        clock=FixedClock(),
         transport=FixtureTransport(
             responses={OAUTH_TOKEN_PATH: HttpResponse(429, b'{"error":"too_many"}')}
         )
@@ -118,7 +120,9 @@ def test_rate_limited_login_is_not_reported_as_bad_credentials() -> None:
 
 
 def test_rejected_credentials_still_raise_auth_error() -> None:
-    client = SpGroupClient(transport=FixtureTransport(fail_login=True))
+    client = SpGroupClient(
+        transport=FixtureTransport(fail_login=True), clock=FixedClock()
+    )
     with pytest.raises(AuthError):
         client.login("user@example.com", "wrong")
 
@@ -137,6 +141,7 @@ def test_non_json_body_on_required_read_reports_the_path() -> None:
 def test_refresh_failure_keeps_the_reason() -> None:
     """The Auth0 verdict must survive into the error the user is shown."""
     client = SpGroupClient(
+        clock=FixedClock(),
         transport=FixtureTransport(
             responses={
                 OAUTH_TOKEN_PATH: HttpResponse(

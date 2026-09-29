@@ -108,11 +108,11 @@ def electricity_graph_periods(usage: UsageReadings) -> tuple[PeriodReading, ...]
     return usage.electricity.periods if usage.electricity else ()
 
 
-def _today_kwh(usage: UsageReadings) -> float | None:
+def _today_kwh(usage: UsageReadings, now: datetime) -> float | None:
     slots = trim_unreported(usage.ami_hourly)
     if not slots:
         return None
-    today = datetime.now(SG_TZ).date()
+    today = now.astimezone(SG_TZ).date()
     return sum(
         item.amount for item in slots if item.start.astimezone(SG_TZ).date() == today
     )
@@ -125,8 +125,14 @@ def _last_interval(usage: UsageReadings) -> PeriodReading | None:
     return max(slots, key=lambda item: item.start)
 
 
-def extra_attributes(usage: UsageReadings, key: str) -> dict[str, object]:
-    """Premise metadata plus last billed period for the matching utility."""
+def extra_attributes(
+    usage: UsageReadings, key: str, now: datetime
+) -> dict[str, object]:
+    """Premise metadata plus last billed period for the matching utility.
+
+    ``now`` is the caller's clock reading, so what counts as today is the same
+    instant the poll used when it asked Jarvis for the AMI window.
+    """
     premise = usage.premise
     attrs: dict[str, object] = {
         "premise_id": premise.id,
@@ -253,7 +259,7 @@ def extra_attributes(usage: UsageReadings, key: str) -> dict[str, object]:
                 if last is not None:
                     attrs["last_period"] = last.start.isoformat()
                     attrs["last_period_amount"] = last.amount
-                today = _today_kwh(usage)
+                today = _today_kwh(usage, now)
                 if today is not None:
                     attrs["today_kwh"] = today
                 last_slot = _last_interval(usage)
@@ -294,8 +300,12 @@ def _last_spec(key: str, series: UtilitySeries, precision: int) -> SensorSpec:
     )
 
 
-def sensors_from_usage(usage: UsageReadings | None) -> list[SensorSpec]:
-    """Return energy/water/gas sensors plus account diagnostics."""
+def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[SensorSpec]:
+    """Return energy/water/gas sensors plus account diagnostics.
+
+    ``now`` is the caller's clock reading, so the today-bucketed sensors
+    describe the same instant the poll read its data at.
+    """
     if usage is None:
         return []
     specs: list[SensorSpec] = []
@@ -316,7 +326,7 @@ def sensors_from_usage(usage: UsageReadings | None) -> list[SensorSpec]:
             )
         )
         specs.append(_last_spec(SENSOR_KEY_ELECTRICITY_LAST, usage.electricity, 1))
-        today = _today_kwh(usage)
+        today = _today_kwh(usage, now)
         if today is not None:
             specs.append(
                 SensorSpec(
@@ -623,9 +633,11 @@ class SensorSpecCache:
     def __init__(self) -> None:
         self._cached: tuple[UsageReadings | None, tuple[SensorSpec, ...]] = (None, ())
 
-    def specs(self, usage: UsageReadings | None) -> tuple[SensorSpec, ...]:
+    def specs(
+        self, usage: UsageReadings | None, now: datetime
+    ) -> tuple[SensorSpec, ...]:
         cached_usage, cached_specs = self._cached
         if usage is not cached_usage:
-            cached_specs = tuple(sensors_from_usage(usage))
+            cached_specs = tuple(sensors_from_usage(usage, now))
             self._cached = (usage, cached_specs)
         return cached_specs

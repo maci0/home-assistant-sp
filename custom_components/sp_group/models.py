@@ -3,9 +3,36 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
+from typing import Protocol
 
 SG_TZ = timezone(timedelta(hours=8))
+
+
+class Clock(Protocol):
+    """Wall-clock source for token expiry and AMI window selection.
+
+    Production passes ``SystemClock``; a test passes a clock the caller steps
+    by hand, so a poll's requests and the periods derived from them depend on
+    the time chosen for the run and not on when the run happened to start.
+    """
+
+    def now(self) -> datetime:
+        """Current time in ``SG_TZ``, timezone-aware."""
+
+    def timestamp(self) -> int:
+        """Whole seconds since the epoch, for OAuth ``expires_at`` compare."""
+
+
+@dataclass(frozen=True)
+class SystemClock:
+    """The real clock. Every time-dependent code path takes its ``Clock``."""
+
+    def now(self) -> datetime:
+        return datetime.now(SG_TZ)
+
+    def timestamp(self) -> int:
+        return int(datetime.now(UTC).timestamp())
 
 
 @dataclass(frozen=True)
