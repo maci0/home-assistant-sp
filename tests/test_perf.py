@@ -23,7 +23,7 @@ from custom_components.sp_group.const import (
     JARVIS_AMI_PATH,
     JARVIS_SMRD_PATH,
 )
-from custom_components.sp_group.mapper import SensorSpec, SensorSpecCache
+from custom_components.sp_group.mapper import SensorSpec, UsageViewCache
 from custom_components.sp_group.models import (
     SG_TZ,
     PeriodReading,
@@ -79,13 +79,15 @@ def test_specs_built_once_per_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     real = mapper.sensors_from_usage
 
     def counting_sensors_from_usage(
-        usage: UsageReadings | None, now: datetime
+        usage: UsageReadings | None,
+        now: datetime,
+        view: mapper.ElectricityView | None = None,
     ) -> list[SensorSpec]:
         builds.append(usage)
-        return real(usage, now)
+        return real(usage, now, view)
 
     monkeypatch.setattr(mapper, "sensors_from_usage", counting_sensors_from_usage)
-    cache = SensorSpecCache()
+    cache = UsageViewCache()
     usage = _usage()
 
     for _ in range(ENTITIES):
@@ -96,13 +98,36 @@ def test_specs_built_once_per_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     cache.specs(_usage(), NOW)
     assert len(builds) == 2, "a new poll must invalidate the cache"
     assert cache.specs(None, NOW) == ()
-    assert len(builds) == 3
+    assert len(builds) == 2, "an empty poll has nothing to build from"
+
+
+def test_ami_window_folded_once_per_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The specs, the attributes, and the statistics import share one fold."""
+    folds: list[UsageReadings | None] = []
+    real = mapper.electricity_view
+
+    def counting_view(usage: UsageReadings, now: datetime) -> mapper.ElectricityView:
+        folds.append(usage)
+        return real(usage, now)
+
+    monkeypatch.setattr(mapper, "electricity_view", counting_view)
+    cache = UsageViewCache()
+    usage = _usage()
+    view = cache.view(usage, NOW)
+
+    cache.specs(usage, NOW)
+    mapper.extra_attributes(usage, "electricity", NOW, view)
+    assert cache.view(usage, NOW) is view
+    assert len(folds) == 1
+
+    cache.view(_usage(), NOW)
+    assert len(folds) == 2, "a new poll must invalidate the cache"
 
 
 def test_cached_reads_cost_far_less_cpu_than_rebuilds() -> None:
     """CPU-time ratio, not wall clock: measured ~140x, asserted at 5x."""
     usage = _usage()
-    cache = SensorSpecCache()
+    cache = UsageViewCache()
     cache.specs(usage, NOW)
 
     start = time.process_time()

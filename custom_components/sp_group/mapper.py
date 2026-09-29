@@ -138,16 +138,50 @@ def _omit_none(attrs: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in attrs.items() if value is not None}
 
 
-def electricity_graph_periods(usage: UsageReadings) -> tuple[PeriodReading, ...]:
-    hourly = fold_half_hours(trim_unreported(usage.ami_hourly))
+def _ami_slots(usage: UsageReadings) -> tuple[PeriodReading, ...]:
+    """The half-hourly AMI slots, ordered, with the unfilled tail dropped."""
+    return trim_unreported(usage.ami_hourly)
+
+
+def _graph_from_slots(
+    usage: UsageReadings, slots: tuple[PeriodReading, ...]
+) -> tuple[PeriodReading, ...]:
+    """The graph periods, ordered oldest first.
+
+    The merge branch is already ordered. The billed-series branch is sorted
+    here because the host returns its periods in no particular order, and every
+    reader downstream either sums them or takes the last one, which is only the
+    newest once they are ordered.
+    """
+    hourly = fold_half_hours(slots)
     merged = merge_ami_periods(usage.ami_daily, hourly)
     if merged:
         return merged
-    return usage.electricity.periods if usage.electricity else ()
+    periods = usage.electricity.periods if usage.electricity else ()
+    return tuple(sorted(periods, key=lambda item: item.start))
 
 
-def _today_kwh(usage: UsageReadings, now: datetime) -> float | None:
-    slots = trim_unreported(usage.ami_hourly)
+@dataclass(frozen=True)
+class ElectricityView:
+    """Everything one poll's AMI series says, folded once.
+
+    The fold and merge walk the whole window: 31 days of half-hourly slots
+    folded to clock hours and merged with 13 months of daily points. Asking for
+    the graph, today's total, and the newest slot separately folds it three
+    times, and the spec build, the electricity attributes, and the statistics
+    import each asked. One view per poll holds the answer all three read.
+    """
+
+    slots: tuple[PeriodReading, ...]
+    graph: tuple[PeriodReading, ...]
+    today_kwh: float | None
+    last_slot: PeriodReading | None
+
+
+_EMPTY_VIEW = ElectricityView(slots=(), graph=(), today_kwh=None, last_slot=None)
+
+
+def _today_kwh(slots: tuple[PeriodReading, ...], now: datetime) -> float | None:
     if not slots:
         return None
     today = now.astimezone(SG_TZ).date()
@@ -162,11 +196,14 @@ def _today_kwh(usage: UsageReadings, now: datetime) -> float | None:
     )
 
 
-def _last_interval(usage: UsageReadings) -> PeriodReading | None:
-    slots = trim_unreported(usage.ami_hourly)
-    if not slots:
-        return None
-    return max(slots, key=lambda item: item.start)
+def electricity_view(usage: UsageReadings, now: datetime) -> ElectricityView:
+    slots = _ami_slots(usage)
+    return ElectricityView(
+        slots=slots,
+        graph=_graph_from_slots(usage, slots),
+        today_kwh=_today_kwh(slots, now),
+        last_slot=slots[-1] if slots else None,
+    )
 
 
 def _premise_attributes(usage: UsageReadings) -> dict[str, object]:
@@ -191,13 +228,16 @@ def _premise_attributes(usage: UsageReadings) -> dict[str, object]:
 
 
 def extra_attributes(
-    usage: UsageReadings, key: str, now: datetime
+    usage: UsageReadings, key: str, now: datetime, view: ElectricityView | None = None
 ) -> dict[str, object]:
     """Premise metadata plus last billed period for the matching utility.
 
     ``now`` is the caller's clock reading, so what counts as today is the same
-    instant the poll used when it asked Jarvis for the AMI window.
+    instant the poll used when it asked Jarvis for the AMI window. ``view`` is
+    that poll's folded AMI series; without one it is built here.
     """
+    if view is None:
+        view = electricity_view(usage, now)
     attrs: dict[str, object] = {}
     if key == SENSOR_KEY_ACCOUNT:
         reading = usage.meter_reading
@@ -313,22 +353,23 @@ def extra_attributes(
     }:
         series = usage.electricity
         if key == SENSOR_KEY_ELECTRICITY:
-            graph = electricity_graph_periods(usage)
+            graph = view.graph
             if graph:
-                last = _last_period(graph)
+                # Ordered oldest first by _graph_from_slots, so the newest is
+                # the last one: a max() here would walk ~1,900 rows per poll.
+                newest = graph[-1]
                 attrs["period_count"] = len(graph)
                 if series is not None:
                     attrs["average_consumption"] = series.average
                     attrs["comparison"] = series.comparison
                 attrs["ami_half_hour_count"] = len(usage.ami_hourly)
                 attrs["ami_daily_count"] = len(usage.ami_daily)
-                if last is not None:
-                    attrs["last_period"] = last.start.isoformat()
-                    attrs["last_period_amount"] = last.amount
-                today = _today_kwh(usage, now)
+                attrs["last_period"] = newest.start.isoformat()
+                attrs["last_period_amount"] = newest.amount
+                today = view.today_kwh
                 if today is not None:
                     attrs["today_kwh"] = today
-                last_slot = _last_interval(usage)
+                last_slot = view.last_slot
                 if last_slot is not None:
                     attrs["last_interval"] = last_slot.start.isoformat()
                     attrs["last_interval_kwh"] = last_slot.amount
@@ -389,11 +430,24 @@ def _last_spec(key: str, series: UtilitySeries, precision: int) -> SensorSpec:
     )
 
 
-def _utility_specs(usage: UsageReadings, now: datetime) -> list[SensorSpec]:
-    """The billed electricity, water, and gas readings, plus the AMI extras."""
+def sensors_from_usage(
+    usage: UsageReadings | None,
+    now: datetime,
+    view: ElectricityView | None = None,
+) -> list[SensorSpec]:
+    """Return energy/water/gas sensors plus account diagnostics.
+
+    ``now`` is the caller's clock reading, so the today-bucketed sensors
+    describe the same instant the poll read its data at. ``view`` is that
+    poll's folded AMI series; without one it is built here.
+    """
+    if usage is None:
+        return []
+    if view is None:
+        view = electricity_view(usage, now)
     specs: list[SensorSpec] = []
     if usage.electricity is not None:
-        graph = electricity_graph_periods(usage)
+        graph = view.graph
         elec_total = (
             sum(item.amount for item in graph) if graph else usage.electricity.total
         )
@@ -408,7 +462,7 @@ def _utility_specs(usage: UsageReadings, now: datetime) -> list[SensorSpec]:
             )
         )
         specs.append(_last_spec(SENSOR_KEY_ELECTRICITY_LAST, usage.electricity, 1))
-        today = _today_kwh(usage, now)
+        today = view.today_kwh
         if today is not None:
             specs.append(
                 _spec(
@@ -419,7 +473,7 @@ def _utility_specs(usage: UsageReadings, now: datetime) -> list[SensorSpec]:
                     precision=2,
                 )
             )
-        last_slot = _last_interval(usage)
+        last_slot = view.last_slot
         if last_slot is not None:
             specs.append(
                 _spec(
@@ -454,7 +508,13 @@ def _utility_specs(usage: UsageReadings, now: datetime) -> list[SensorSpec]:
             )
         )
         specs.append(_last_spec(SENSOR_KEY_GAS_LAST, usage.gas, 1 if is_kwh else 2))
-    return specs
+    return [
+        *specs,
+        *_billing_specs(usage),
+        *_register_specs(usage),
+        *_service_specs(usage),
+        *_fcu_specs(usage),
+    ]
 
 
 def _billing_specs(usage: UsageReadings) -> list[SensorSpec]:
@@ -664,43 +724,62 @@ def _fcu_specs(usage: UsageReadings) -> list[SensorSpec]:
     return specs
 
 
-def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[SensorSpec]:
-    """Return energy/water/gas sensors plus account diagnostics.
+class UsageViewCache:
+    """Derive a poll's sensor specs and AMI view once, not once per reader.
 
-    ``now`` is the caller's clock reading, so the today-bucketed sensors
-    describe the same instant the poll read its data at.
-    """
-    if usage is None:
-        return []
-    return [
-        *_utility_specs(usage, now),
-        *_billing_specs(usage),
-        *_register_specs(usage),
-        *_service_specs(usage),
-        *_fcu_specs(usage),
-    ]
+    Every entity reads the spec list and its own attributes on each
+    coordinator update, and the statistics import reads the same AMI window
+    again. Each of those used to walk the whole window: ~1,900 half-hourly
+    slots folded to clock hours and merged with ~400 daily points. The
+    coordinator holds one cache; a new ``UsageReadings`` object (a new poll) or
+    a new clock reading invalidates it.
 
-
-class SensorSpecCache:
-    """Build the sensor specs once per ``UsageReadings``, not once per entity.
-
-    Every entity reads the spec list on each coordinator update. The list walks
-    the whole AMI window, so building it per entity costs one fold-and-merge of
-    ~1,900 period rows per entity per poll. The coordinator holds one cache;
-    a new ``UsageReadings`` object (a new poll) invalidates it. The key and the
-    specs are published as one immutable tuple, so a reader sees either the
-    previous poll's specs or the new poll's, never a mix, and cannot hand one
-    reader a list another reader is iterating.
+    The view, the specs, and the by-key index are published as one immutable
+    tuple, so a reader sees either the previous poll's values or the new
+    poll's, never a mix, and cannot hand one reader a list another reader is
+    iterating.
     """
 
     def __init__(self) -> None:
-        self._cached: tuple[UsageReadings | None, tuple[SensorSpec, ...]] = (None, ())
+        self._cached: tuple[
+            UsageReadings | None,
+            datetime | None,
+            ElectricityView,
+            tuple[SensorSpec, ...],
+            dict[str, SensorSpec],
+        ] = (None, None, _EMPTY_VIEW, (), {})
+
+    def _refresh(self, usage: UsageReadings | None, now: datetime) -> None:
+        view = _EMPTY_VIEW if usage is None else electricity_view(usage, now)
+        specs = () if usage is None else tuple(sensors_from_usage(usage, now, view))
+        # First spec wins, as the scan this index replaces did.
+        by_key: dict[str, SensorSpec] = {}
+        for spec in specs:
+            by_key.setdefault(spec.key, spec)
+        self._cached = (usage, now, view, specs, by_key)
+
+    def view(self, usage: UsageReadings | None, now: datetime) -> ElectricityView:
+        cached_usage, cached_now, view, _, _ = self._cached
+        if usage is not cached_usage or now is not cached_now:
+            self._refresh(usage, now)
+            return self._cached[2]
+        return view
 
     def specs(
         self, usage: UsageReadings | None, now: datetime
     ) -> tuple[SensorSpec, ...]:
-        cached_usage, cached_specs = self._cached
-        if usage is not cached_usage:
-            cached_specs = tuple(sensors_from_usage(usage, now))
-            self._cached = (usage, cached_specs)
-        return cached_specs
+        cached_usage, cached_now, _, specs, _ = self._cached
+        if usage is not cached_usage or now is not cached_now:
+            self._refresh(usage, now)
+            return self._cached[3]
+        return specs
+
+    def spec_for(
+        self, usage: UsageReadings | None, now: datetime, key: str
+    ) -> SensorSpec | None:
+        """One spec by key, so an entity does not scan the list to find it."""
+        cached_usage, cached_now, _, _, by_key = self._cached
+        if usage is not cached_usage or now is not cached_now:
+            self._refresh(usage, now)
+            return self._cached[4].get(key)
+        return by_key.get(key)

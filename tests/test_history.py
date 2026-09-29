@@ -18,7 +18,7 @@ from custom_components.sp_group.history import (
     trim_unreported,
     unimported,
 )
-from custom_components.sp_group.mapper import electricity_graph_periods
+from custom_components.sp_group.mapper import electricity_view
 from custom_components.sp_group.models import SG_TZ, BillInfo, PeriodReading
 
 from .conftest import billed_totals_from_charts_payload, fixture_client, load_fixture
@@ -183,7 +183,7 @@ def test_merge_prefers_hourly_on_same_day() -> None:
 def test_electricity_graph_uses_ami_not_billed() -> None:
     client = fixture_client()
     usage = client.fetch_usage()
-    graph = electricity_graph_periods(usage)
+    graph = electricity_view(usage, client.clock.now()).graph
     assert sum(item.amount for item in graph) == pytest.approx(24.0)
     points = cumulative_points(graph)
     assert points[-1].cumulative == pytest.approx(24.0)

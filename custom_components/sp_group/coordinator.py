@@ -50,8 +50,7 @@ from .history import (
 )
 from .mapper import (
     SensorSpec,
-    SensorSpecCache,
-    electricity_graph_periods,
+    UsageViewCache,
     extra_attributes,
 )
 from .models import PeriodReading, UsageReadings
@@ -97,13 +96,17 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         self._imported_price: float | None = None
         self._imported_premise: str | None = None
         self._imported_points: dict[str, datetime] = {}
-        self._spec_cache = SensorSpecCache()
+        self._spec_cache = UsageViewCache()
         self._now = self.client.clock.now()
 
     @property
     def sensor_specs(self) -> tuple[SensorSpec, ...]:
         """The current sensor specs, built once per poll for every entity."""
         return self._spec_cache.specs(self.data, self.now)
+
+    def spec_for(self, key: str) -> SensorSpec | None:
+        """One spec by key, so an entity does not scan the list to find it."""
+        return self._spec_cache.spec_for(self.data, self.now, key)
 
     @property
     def now(self) -> datetime:
@@ -117,7 +120,10 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
 
     def extra_attributes(self, key: str) -> dict[str, object]:
         usage = self.data
-        return {} if usage is None else extra_attributes(usage, key, self.now)
+        if usage is None:
+            return {}
+        now = self.now
+        return extra_attributes(usage, key, now, self._spec_cache.view(usage, now))
 
     @property
     def electricity_price(self) -> float | None:
@@ -306,9 +312,12 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 "unit_of_measurement": unit,
             }
 
+        price = self.electricity_price
         if usage.electricity is not None:
-            graph = electricity_graph_periods(usage)
-            points = cumulative_points(graph or usage.electricity.periods)
+            periods = self._spec_cache.view(usage, self.now).graph
+            points = cumulative_points(
+                periods if periods else usage.electricity.periods
+            )
             if points:
                 self._add_external_statistics(
                     usage.premise_id,
@@ -322,7 +331,6 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                     points,
                     _cumulative,
                 )
-                price = self.electricity_price
                 cost_id = external_statistic_id(
                     usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
                 )

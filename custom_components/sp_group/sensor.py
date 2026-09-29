@@ -103,10 +103,7 @@ class SpGroupSensor(CoordinatorEntity[SpGroupCoordinator], SensorEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        spec = next(
-            (item for item in self.coordinator.sensor_specs if item.key == self._key),
-            None,
-        )
+        spec = self.coordinator.spec_for(self._key)
         if spec is None:
             self._spec = None
         else:
