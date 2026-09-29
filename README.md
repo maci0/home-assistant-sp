@@ -43,7 +43,7 @@ Polls every 30 minutes. After the first successful poll, long-term statistics ar
 - Do not add **Electricity last billed**, **Electricity meter**, or **Electricity this month** as grid sources. They are a different number: last billed period, the physical register, and Green Goals month-to-date.
 - Leave Water empty in Energy. SP bills water monthly. **Water** is the sum of billed months; **Water meter** is the lifetime register. Neither is an hourly series.
 - Gas: **SP Group gas** (`sp_group:{premise_id}_gas`) only if Jarvis returned billed gas periods.
-- Each poll writes only the points the recorder does not have yet, so a restart or a re-auth does not re-send the loaded window. A value SP later restates for an already imported point is not rewritten.
+- Within one Home Assistant run, each poll writes only the points after the last one written per statistic, so the loaded window reaches the recorder once. What has been written is held in memory only, so a restart or a re-auth re-sends the whole window; the recorder keys a row by statistic id and start, so the readings land on the rows they already occupy. For the same reason a value SP restates for an already imported point is dropped only until the next restart.
 
 AMI electricity lags a few hours. Empty future 30-minute slots are dropped. **Electricity last 30 min** is the last published slot, not the clock hour.
 
@@ -77,7 +77,7 @@ Names below are the entity names. Unique id is `{premise_id}_{key}`. Optional ro
 | --- | --- | --- |
 | Electricity meter | `electricity_meter` | SMRD last_actual snapshot, kWh. `total`, not Energy |
 | Water meter | `water_meter` | SMRD last_actual snapshot, m³. `total`, not Energy |
-| Electricity this month | `electricity_goal` | Green Goals used kWh. Attributes: `goal_target`, `percent_difference`, `cost_difference_sgd` |
+| Electricity this month | `electricity_goal` | Green Goals used kWh. Attributes: `goal_month`, `goal_target`, `percent_difference`, `cost_difference_sgd` |
 | Water this month | `water_goal` | Same for water when used or target is non-zero |
 
 ### Optional
@@ -91,7 +91,7 @@ Names below are the entity names. Unique id is `{premise_id}_{key}`. Optional ro
 | EV unpaid | `ev_unpaid` | Eva unpaid orders list is non-empty |
 | Unread notifications | `unread_notifications` | Notifications API returns a count |
 | Bill delivery | `bill_delivery` | Skalbox preferences exist. State is `ebill` or `paper`, displayed through the translation catalog |
-| FCU | `fcu_{thing}` | One sensor per Frosty paired Tengah coil, keyed by the lowercased `thingName`. Room temperature, else `on` / `off` |
+| FCU | `fcu_{thing}` | One sensor per Frosty paired Tengah coil. The key is the `thingName` NFKC-normalized and case-folded, with anything outside `0-9A-Za-z` replaced by `_`; a name that is not ASCII, or that reduces to nothing, also carries a short digest of the folded name so two coils differing only in dropped characters stay apart. Room temperature, else `on` / `off` |
 | SP tariff | `tariff` | Public priceplan `sp_kwh_price`. Query uses last billed kWh, else 350 |
 | Account | `account` | Always. Status plus address, account number, AMI flag, retailer, next meter-reading window |
 
@@ -114,16 +114,17 @@ Required, in order:
 4. `GET https://b2c.api.spdigital.sg/jarvis/v3/smrd-uportal/{premise_id}`
 5. `GET https://b2c.api.spdigital.sg/jarvis/v3/ppms/balance/{premise_id}` only if prepaid exists
 6. `POST https://b2c.api.spdigital.sg/jarvis/v3/ami/charts` when `ami_elec` (`grouped_by` `day` then `month`)
-7. `GET https://b2c.api.spdigital.sg/njord/v3/history?account_numbers={account}` latest `type=bill`. PDF URLs are not stored
+7. `GET https://b2c.api.spdigital.sg/njord/v3/history?account_numbers={account}` every `type=bill` row, ordered by the instant it was issued; the newest one is the **Last bill**. PDF URLs are not stored
 8. `GET https://b2c.api.spdigital.sg/njord/v4/payables` (integer cents)
 9. `GET https://b2c.api.spdigital.sg/jarvis/v5/greengoals/targets`
 
 A failed or empty `/jarvis/v3/me` or `/jarvis/v4/charts` aborts the poll. Steps
 4 to 9 are best effort: an error or an empty payload skips whatever that call
 feeds, so a missing entity means that one read returned nothing, not that the
-whole update failed. Every skipped read except a 404 is logged with the route
-and the status, so a sensor that never appears leaves a log line naming the
-call that failed.
+whole update failed. A skipped read that came back with a status other than 404
+is logged with the route and the status, so a sensor that never appears leaves
+a log line naming the call that failed. An empty 200 says nothing and is not
+logged.
 
 Then optional reads (8s HTTP timeout each). 4xx or empty payloads skip the matching sensor:
 
@@ -203,7 +204,8 @@ interpreter uv builds the environment with; `requires-python`, the mypy target
 and the ruff target have to agree with it, which `tests/test_toolchain.py`
 checks.
 
-Optional live call: `SP_USERNAME` and `SP_PASSWORD`. Both are required; the
+Optional live call: `SP_USERNAME` and `SP_PASSWORD` in the environment, read by
+`uv run python scripts/live_api.py`. Both are required; the
 script exits 1 naming the missing one, 2 on rejected credentials, 3 on a usage
 failure, and 0 only when it read the API.
 

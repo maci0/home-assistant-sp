@@ -234,7 +234,9 @@ def _log_optional_status(path: str, status: int) -> None:
 
     A 5xx means the dependency is broken and the entities it feeds go
     unavailable, so it warns. A 4xx means the account has no enrollment for
-    that service, which is the expected steady state and only a debug line.
+    that service, which is the expected steady state and only a debug line
+    here; ``_optional_json`` then warns again for the same response, with the
+    server's message, when the body reaches it.
     """
     if status >= 500:
         _LOGGER.warning("optional read %s returned HTTP %s", path, status)
@@ -1597,6 +1599,15 @@ class SpGroupClient:
         return body if isinstance(body, dict) else {}
 
     def fetch_usage(self) -> UsageReadings:
+        """One poll, blocking, from the identity host to the optional reads.
+
+        Refreshes the session first when the stored one is unusable, and
+        replaces it on the way out, so a caller that persists
+        ``self.session`` afterwards keeps the tokens this poll used. Only a
+        failed or empty ``/me``, ``/charts``, or a premise with no billed
+        utility fails the poll; every other read that errors skips the
+        sensors it feeds.
+        """
         session = self.ensure_session()
         try:
             return self._fetch_usage_with(session)
@@ -1652,9 +1663,10 @@ class SpGroupClient:
             _LOGGER.warning("skipping optional read: %s", exc)
             return None
         if response.status >= 400:
-            # The response arrived, so no other line names this read: a 5xx takes
-            # the sensors it feeds away, and a 4xx is the account not being
-            # enrolled for the service, which is expected and stays at debug.
+            # The status on its own, at the level that says how much it matters:
+            # a 5xx takes the sensors it feeds away, a 4xx is the account not
+            # being enrolled for the service. _optional_json adds the server's
+            # own message for this same response.
             _log_optional_status(_request_label(url), response.status)
         return response
 

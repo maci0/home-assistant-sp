@@ -27,11 +27,16 @@ def unimported[Started: HasStart](
 ) -> list[Started]:
     """The points the recorder does not have yet.
 
-    A re-import runs on every poll and re-sends the whole series. The recorder
-    keys a row by (statistic id, start), so re-sending an old point rewrites a
-    row that already holds the same value, forever. Sending only the points
-    after the last imported start bounds what one series adds to long-term
-    statistics to the readings that are actually new.
+    Every poll recomputes the whole series from the loaded window, so without
+    this filter the poll would rewrite all of it on every cycle. The recorder
+    keys a row by (statistic id, start), so the rewrite is invisible work, not
+    a wrong number, and filtering keeps one series to the readings that are
+    actually new.
+
+    ``imported_through`` is the caller's in-memory record of the last start it
+    sent, which starts empty on every Home Assistant restart: the first import
+    after one is the whole series. Nothing here reads the recorder back to
+    discover what is already there.
     """
     if imported_through is None:
         return list(points)
