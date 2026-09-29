@@ -19,6 +19,7 @@ environment picks the seed; without it the recorded default runs.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -388,10 +389,8 @@ def test_fuzz_scalar_readers_reject_hostile_values() -> None:
         check_invariants(
             client_module._parse_unread({"total_unread_notifications": value}), where
         )
-        try:
+        with contextlib.suppress(UsageError):
             check_invariants(client_module._float(value), where)
-        except UsageError:
-            pass
 
 
 def test_fuzz_json_decoding_never_leaks_a_raw_exception() -> None:

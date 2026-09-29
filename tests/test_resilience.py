@@ -400,7 +400,7 @@ def test_concurrent_fetches_spend_the_refresh_token_once() -> None:
         start.wait()
         try:
             fetched.append(client.fetch_usage())
-        except Exception as exc:  # reported below, not swallowed
+        except Exception as exc:  # noqa: BLE001 - any failure counts, reported below
             failures.append(exc)
 
     threads = [threading.Thread(target=_poll) for _ in range(readers)]

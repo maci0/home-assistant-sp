@@ -14,7 +14,7 @@ IDENTITY_HOST = "https://identity.spdigital.sg"
 B2C_HOST = "https://b2c.api.spdigital.sg"
 PUBLIC_HOST = "https://public.api.spdigital.sg"
 
-OAUTH_TOKEN_PATH = "/oauth/token"
+OAUTH_TOKEN_PATH = "/oauth/token"  # noqa: S105
 JARVIS_ME_PATH = "/jarvis/v3/me"
 JARVIS_CHARTS_PATH = "/jarvis/v4/charts"
 JARVIS_PPMS_PATH = "/jarvis/v3/ppms/balance"
@@ -88,18 +88,20 @@ API_PATHS = (
 )
 TOKEN_EXPIRY_BUFFER_SECONDS = 60
 
-CONF_ACCESS_TOKEN = "access_token"
-CONF_ID_TOKEN = "id_token"
-CONF_REFRESH_TOKEN = "refresh_token"
+# The config entry keys and the header name below are key names, not secrets;
+# the credential values reach the client from the config entry at runtime.
+CONF_ACCESS_TOKEN = "access_token"  # noqa: S105
+CONF_ID_TOKEN = "id_token"  # noqa: S105
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105
 CONF_MFA_CODE = "mfa_code"
 CONF_ELECTRICITY_PRICE = "electricity_price"
 # The same values as homeassistant.const, so the Home-Assistant-free client
 # layer can build the config entry data dict.
 CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
+CONF_PASSWORD = "password"  # noqa: S105
 
 USER_AGENT = "Infinity/15.10.0 (Android)"
-HEADER_ID_TOKEN = "X-id-token"
+HEADER_ID_TOKEN = "X-id-token"  # noqa: S105
 CONTENT_TYPE_JSON = "application/json; charset=utf-8"
 # The encoding every SP response body is decoded with. utf-8-sig is utf-8 that
 # also drops a leading byte-order mark, which a .NET gateway in front of an

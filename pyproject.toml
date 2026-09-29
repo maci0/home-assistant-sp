@@ -27,12 +27,14 @@ target-version = "py312"
 select = [
     "A",   # builtin shadowing
     "B",   # bugbear
+    "BLE", # blind except
     "C4",  # comprehensions
     "DTZ", # naive datetimes
     "ERA", # commented-out code
     "E",
     "F",
     "FA",  # future annotations
+    "FLY", # f-strings in logging calls
     "G",   # logging format
     "I",
     "ICN", # import aliases
@@ -46,13 +48,21 @@ select = [
     "PTH", # pathlib
     "Q",   # quotes
     "RET", # returns
+    "RSE", # unnecessary parens on raise
     "RUF",
+    "S",   # bandit
+    "SIM", # simplifiable code
     "TID", # tidy imports
     "UP",
+    "W",   # pycodestyle warnings
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/*.py" = ["E402"]
+# Asserts are how a test states its expectation, the credentials are fixtures for
+# the login path, and the fuzz corpus draws from a seeded Random so a run is
+# reproducible. None of the three is a secret or a weak choice in production.
+"tests/*.py" = ["S101", "S105", "S106", "S311"]
 # The fuzz corpus is ambiguous digits on purpose: they are what the parser must survive.
 "tests/test_fuzz.py" = ["RUF001"]
 # Same for the fold and sensor-key tests: full-width codes and an en dash are
