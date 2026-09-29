@@ -30,7 +30,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> b
     from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
     from .client import AuthError, Session, SpGroupClient, UsageError
-    from .const import CONF_ACCESS_TOKEN, CONF_ID_TOKEN, CONF_REFRESH_TOKEN
+    from .const import (
+        CONF_ACCESS_TOKEN,
+        CONF_ID_TOKEN,
+        CONF_REFRESH_TOKEN,
+        OAUTH_ERROR_REQUIRES_VERIFICATION,
+    )
     from .coordinator import SpGroupCoordinator
 
     access = entry.data.get(CONF_ACCESS_TOKEN)
@@ -43,16 +48,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> b
             id_token=ident,
             refresh_token=refresh if isinstance(refresh, str) else None,
         )
-    client = SpGroupClient(
-        session=session,
-    )
+    client = SpGroupClient(session=session)
     coordinator = SpGroupCoordinator(hass, client, entry)
     try:
         await coordinator.async_config_entry_first_refresh()
     except AuthError as exc:
-        if exc.error == "requires_verification":
+        if exc.error == OAUTH_ERROR_REQUIRES_VERIFICATION:
             raise ConfigEntryNotReady(
-                str(exc), **translated_error("requires_verification", exc)
+                str(exc), **translated_error(OAUTH_ERROR_REQUIRES_VERIFICATION, exc)
             ) from exc
         raise ConfigEntryAuthFailed(
             str(exc), **translated_error("auth_failed", exc)

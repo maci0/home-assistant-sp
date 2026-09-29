@@ -107,7 +107,7 @@ def test_identity_host_outage_is_not_reported_as_bad_credentials() -> None:
         clock=FixedClock(),
         transport=FixtureTransport(
             responses={OAUTH_TOKEN_PATH: HttpResponse(503, b"<html>gateway</html>")}
-        )
+        ),
     )
     with pytest.raises(TransportError) as raised:
         client.login("user@example.com", "secret")
@@ -119,7 +119,7 @@ def test_rate_limited_login_is_not_reported_as_bad_credentials() -> None:
         clock=FixedClock(),
         transport=FixtureTransport(
             responses={OAUTH_TOKEN_PATH: HttpResponse(429, b'{"error":"too_many"}')}
-        )
+        ),
     )
     with pytest.raises(TransportError):
         client.login("user@example.com", "secret")

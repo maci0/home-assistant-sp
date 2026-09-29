@@ -113,6 +113,10 @@ OPTIONAL_HTTP_TIMEOUT_SECONDS = 8
 # else (429, 5xx) is the identity host being unavailable.
 AUTH_REJECT_STATUSES = frozenset({400, 401, 403})
 
+# Auth0 error codes this integration branches on.
+OAUTH_ERROR_MFA_REQUIRED = "mfa_required"
+OAUTH_ERROR_REQUIRES_VERIFICATION = "requires_verification"
+
 TARIFF_DEFAULT_CONSUMPTION_KWH = 350
 EVA_INTEGER_CENTS_MIN = 100
 

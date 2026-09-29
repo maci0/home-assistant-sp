@@ -61,7 +61,6 @@ from .models import SG_TZ, FcuInfo, PeriodReading, UsageReadings, UtilitySeries
 @dataclass(frozen=True)
 class SensorSpec:
     key: str
-    translation_key: str
     native_value: float | str | None
     device_class: str | None
     state_class: str | None
@@ -70,12 +69,25 @@ class SensorSpec:
     suggested_display_precision: int | None = None
     name: str | None = None
 
+    @property
+    def translation_key(self) -> str:
+        """The strings.json key: the sensor's own, or the shared FCU one.
+
+        A per-thing FCU sensor is keyed ``fcu_{thing}`` so its unique id stays
+        distinct, but it shares one translated name with every other coil.
+        """
+        return SENSOR_KEY_FCU if _is_fcu_key(self.key) else self.key
+
 
 _FCU_KEY_SAFE = re.compile(r"[^0-9A-Za-z]+")
 _ISO_CURRENCY = re.compile(r"[A-Za-z]{3}")
 # Length of the digest that keeps two coils apart when their names differ only
 # in characters the safe key form drops.
 _FCU_KEY_DIGEST_CHARS = 8
+
+
+def _is_fcu_key(key: str) -> bool:
+    return key == SENSOR_KEY_FCU or key.startswith(f"{SENSOR_KEY_FCU}_")
 
 
 def _currency(code: str | None) -> str:
@@ -250,7 +262,7 @@ def extra_attributes(
         if unpaid is not None:
             attrs["order_count"] = unpaid.count
         return _omit_none(attrs)
-    if key == SENSOR_KEY_FCU or key.startswith(f"{SENSOR_KEY_FCU}_"):
+    if _is_fcu_key(key):
         fcu = _fcu_from_key(usage, key)
         if fcu is not None:
             attrs["thing_name"] = fcu.thing_name
@@ -325,7 +337,6 @@ def _last_spec(key: str, series: UtilitySeries, precision: int) -> SensorSpec:
     last = _last_period(series.periods)
     return SensorSpec(
         key=key,
-        translation_key=key,
         native_value=last.amount if last is not None else None,
         device_class=None,
         state_class=STATE_CLASS_MEASUREMENT,
@@ -351,7 +362,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_ELECTRICITY,
-                translation_key=SENSOR_KEY_ELECTRICITY,
                 native_value=elec_total,
                 device_class=DEVICE_CLASS_ENERGY,
                 state_class=STATE_CLASS_TOTAL_INCREASING,
@@ -365,7 +375,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
             specs.append(
                 SensorSpec(
                     key=SENSOR_KEY_ELECTRICITY_TODAY,
-                    translation_key=SENSOR_KEY_ELECTRICITY_TODAY,
                     native_value=today,
                     device_class=None,
                     state_class=STATE_CLASS_MEASUREMENT,
@@ -378,7 +387,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
             specs.append(
                 SensorSpec(
                     key=SENSOR_KEY_ELECTRICITY_HOUR,
-                    translation_key=SENSOR_KEY_ELECTRICITY_HOUR,
                     native_value=last_slot.amount,
                     device_class=None,
                     state_class=STATE_CLASS_MEASUREMENT,
@@ -390,7 +398,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_WATER,
-                translation_key=SENSOR_KEY_WATER,
                 native_value=usage.water.total,
                 device_class=DEVICE_CLASS_WATER,
                 state_class=None,
@@ -406,7 +413,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_GAS,
-                translation_key=SENSOR_KEY_GAS,
                 native_value=usage.gas.total,
                 device_class=gas_class,
                 state_class=STATE_CLASS_TOTAL_INCREASING,
@@ -418,7 +424,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
     specs.append(
         SensorSpec(
             key=SENSOR_KEY_ACCOUNT,
-            translation_key=SENSOR_KEY_ACCOUNT,
             native_value=usage.premise.account_status or SENSOR_STATE_UNKNOWN,
             device_class=None,
             state_class=None,
@@ -430,7 +435,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_PPMS,
-                translation_key=SENSOR_KEY_PPMS,
                 native_value=usage.ppms_credit,
                 device_class=DEVICE_CLASS_MONETARY,
                 state_class=None,
@@ -443,7 +447,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_LAST_BILL,
-                translation_key=SENSOR_KEY_LAST_BILL,
                 native_value=usage.last_bill.amount_sgd,
                 device_class=DEVICE_CLASS_MONETARY,
                 state_class=STATE_CLASS_TOTAL,
@@ -455,7 +458,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_AMOUNT_DUE,
-                translation_key=SENSOR_KEY_AMOUNT_DUE,
                 native_value=usage.amount_due.amount_sgd,
                 device_class=DEVICE_CLASS_MONETARY,
                 state_class=None,
@@ -468,7 +470,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_ELECTRICITY_METER,
-                translation_key=SENSOR_KEY_ELECTRICITY_METER,
                 native_value=elec_meter.value,
                 device_class=DEVICE_CLASS_ENERGY,
                 # total, not total_increasing: a register is a running lifetime
@@ -484,7 +485,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_WATER_METER,
-                translation_key=SENSOR_KEY_WATER_METER,
                 native_value=water_meter.value,
                 device_class=DEVICE_CLASS_WATER,
                 state_class=STATE_CLASS_TOTAL,
@@ -497,7 +497,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_ELECTRICITY_GOAL,
-                translation_key=SENSOR_KEY_ELECTRICITY_GOAL,
                 native_value=elec_goal.used,
                 device_class=None,
                 state_class=STATE_CLASS_MEASUREMENT,
@@ -510,7 +509,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_WATER_GOAL,
-                translation_key=SENSOR_KEY_WATER_GOAL,
                 native_value=water_goal.used,
                 device_class=None,
                 state_class=STATE_CLASS_MEASUREMENT,
@@ -522,7 +520,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_GREENUP_POINTS,
-                translation_key=SENSOR_KEY_GREENUP_POINTS,
                 native_value=usage.greenup.points,
                 device_class=None,
                 state_class=None,
@@ -535,7 +532,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_EV_WALLET,
-                translation_key=SENSOR_KEY_EV_WALLET,
                 native_value=usage.ev_wallet.points,
                 device_class=None,
                 state_class=None,
@@ -547,7 +543,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_EV_SESSION,
-                translation_key=SENSOR_KEY_EV_SESSION,
                 native_value=usage.ev_session.status or SENSOR_STATE_UNKNOWN,
                 device_class=None,
                 state_class=None,
@@ -558,7 +553,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_EV_LAST_CHARGE,
-                translation_key=SENSOR_KEY_EV_LAST_CHARGE,
                 native_value=usage.ev_last_charge.kwh,
                 device_class=DEVICE_CLASS_ENERGY,
                 state_class=None,
@@ -566,25 +560,17 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 suggested_display_precision=2,
             )
         )
-    if usage.ev_unpaid is not None:
+    unpaid = usage.ev_unpaid
+    if unpaid is not None:
+        # An unpaid-orders list with no amount reports the order count instead.
+        priced = unpaid.amount is not None
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_EV_UNPAID,
-                translation_key=SENSOR_KEY_EV_UNPAID,
-                native_value=(
-                    usage.ev_unpaid.amount
-                    if usage.ev_unpaid.amount is not None
-                    else usage.ev_unpaid.count
-                ),
-                device_class=(
-                    DEVICE_CLASS_MONETARY
-                    if usage.ev_unpaid.amount is not None
-                    else None
-                ),
+                native_value=unpaid.amount if priced else unpaid.count,
+                device_class=DEVICE_CLASS_MONETARY if priced else None,
                 state_class=None,
-                unit_of_measurement=(
-                    UNIT_SGD if usage.ev_unpaid.amount is not None else None
-                ),
+                unit_of_measurement=UNIT_SGD if priced else None,
                 suggested_display_precision=2,
             )
         )
@@ -592,7 +578,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_UNREAD_NOTIFICATIONS,
-                translation_key=SENSOR_KEY_UNREAD_NOTIFICATIONS,
                 native_value=usage.unread_notifications,
                 device_class=None,
                 state_class=None,
@@ -610,7 +595,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_BILL_DELIVERY,
-                translation_key=SENSOR_KEY_BILL_DELIVERY,
                 native_value=delivery,
                 device_class=None,
                 state_class=None,
@@ -623,7 +607,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=_fcu_sensor_key(fcu.thing_name),
-                translation_key=SENSOR_KEY_FCU,
                 native_value=(
                     fcu.room_temperature
                     if has_temp
@@ -640,7 +623,6 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         specs.append(
             SensorSpec(
                 key=SENSOR_KEY_TARIFF,
-                translation_key=SENSOR_KEY_TARIFF,
                 native_value=usage.tariff.kwh_price,
                 device_class=DEVICE_CLASS_MONETARY,
                 state_class=None,

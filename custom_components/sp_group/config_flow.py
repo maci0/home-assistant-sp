@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import voluptuous as vol
@@ -17,6 +19,8 @@ from .const import (
     CONF_ELECTRICITY_PRICE,
     CONF_MFA_CODE,
     DOMAIN,
+    OAUTH_ERROR_MFA_REQUIRED,
+    OAUTH_ERROR_REQUIRES_VERIFICATION,
     parse_electricity_price,
 )
 
@@ -41,17 +45,16 @@ async def _validate(
     hass: HomeAssistant,
     username: str,
     password: str,
-    method: str | None = None,
-    *args: str,
+    exchange: Callable[[SpGroupClient], None] | None = None,
 ) -> dict[str, str]:
     """Log in (or finish an MFA exchange) and read usage, in one executor job."""
     client = SpGroupClient()
 
     def _login_and_fetch() -> None:
-        if method is None:
+        if exchange is None:
             client.login(username, password)
         else:
-            getattr(client, method)(*args)
+            exchange(client)
         client.fetch_usage()
 
     await hass.async_add_executor_job(_login_and_fetch)
@@ -59,11 +62,10 @@ async def _validate(
 
 
 def _auth_error_key(exc: AuthError) -> str:
-    return (
-        "requires_verification"
-        if exc.error == "requires_verification"
-        else "invalid_auth"
-    )
+    """The strings.json error key: the Auth0 code, or invalid_auth for the rest."""
+    if exc.error == OAUTH_ERROR_REQUIRES_VERIFICATION:
+        return OAUTH_ERROR_REQUIRES_VERIFICATION
+    return "invalid_auth"
 
 
 class SpGroupOptionsFlow(config_entries.OptionsFlow):
@@ -127,7 +129,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         tell the user. A new account has no ``entry``; the MFA step then creates
         one instead of updating.
         """
-        if exc.error != "mfa_required" or not exc.mfa_token:
+        if exc.error != OAUTH_ERROR_MFA_REQUIRED or not exc.mfa_token:
             return None
         self._mfa_context = {
             CONF_USERNAME: user_input[CONF_USERNAME],
@@ -152,24 +154,24 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             context = self._mfa_context
             try:
                 if context.get("mfa_channel") == "oob":
-                    data = await _validate(
-                        self.hass,
-                        context[CONF_USERNAME],
-                        context[CONF_PASSWORD],
-                        "submit_mfa_oob",
-                        context["mfa_token"],
-                        context["mfa_oob_code"],
-                        user_input[CONF_MFA_CODE],
+                    exchange = partial(
+                        SpGroupClient.submit_mfa_oob,
+                        mfa_token=context["mfa_token"],
+                        oob_code=context["mfa_oob_code"],
+                        binding_code=user_input[CONF_MFA_CODE],
                     )
                 else:
-                    data = await _validate(
-                        self.hass,
-                        context[CONF_USERNAME],
-                        context[CONF_PASSWORD],
-                        "submit_mfa",
-                        context["mfa_token"],
-                        user_input[CONF_MFA_CODE],
+                    exchange = partial(
+                        SpGroupClient.submit_mfa,
+                        mfa_token=context["mfa_token"],
+                        otp=user_input[CONF_MFA_CODE],
                     )
+                data = await _validate(
+                    self.hass,
+                    context[CONF_USERNAME],
+                    context[CONF_PASSWORD],
+                    exchange,
+                )
             except AuthError as exc:
                 _LOGGER.warning("mfa code rejected: %s", exc)
                 errors["base"] = _auth_error_key(exc)

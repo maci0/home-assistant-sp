@@ -688,9 +688,6 @@ def _parse_premise(premise: dict[str, object]) -> PremiseInfo:
     meter_map = meter if isinstance(meter, dict) else {}
     ami = meter_map.get("ami_elec")
     ppms = premise.get("ppms_details")
-    ppms_exists = False
-    if isinstance(ppms, dict) and ppms.get("exists") is True:
-        ppms_exists = True
     return PremiseInfo(
         id=premise_id,
         address=_optional_str(premise.get("address"))
@@ -702,7 +699,7 @@ def _parse_premise(premise: dict[str, object]) -> PremiseInfo:
         utilities=_string_tuple(account.get("utilities")),
         ami_elec=ami if isinstance(ami, bool) else None,
         retailer_name=_optional_str(contestable_map.get("retailer_name")),
-        ppms_exists=ppms_exists,
+        ppms_exists=isinstance(ppms, dict) and ppms.get("exists") is True,
     )
 
 
