@@ -1280,8 +1280,20 @@ def _login_cooldown(username: str) -> float:
 
 
 def _note_login_failure(username: str) -> None:
+    """Start the cooldown, dropping the entries that already expired.
+
+    The dict is module-level and lives as long as the Home Assistant process,
+    but an entry older than the cooldown no longer throttles anything: a name
+    tried once years ago and never again would sit here forever. Sweeping on
+    write bounds the map to the usernames that failed within one cooldown
+    window, with no separate timer to keep alive.
+    """
+    now = time.monotonic()
     with _LOGIN_FAILURE_LOCK:
-        _LOGIN_FAILURES[fold_text(username)] = time.monotonic()
+        for name, failed_at in tuple(_LOGIN_FAILURES.items()):
+            if now - failed_at >= LOGIN_RETRY_COOLDOWN_SECONDS:
+                del _LOGIN_FAILURES[name]
+        _LOGIN_FAILURES[fold_text(username)] = now
 
 
 def _clear_login_failures(username: str) -> None:

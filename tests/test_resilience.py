@@ -570,6 +570,30 @@ def test_an_mfa_challenge_is_not_a_rejected_password() -> None:
     assert _login_cooldown("user@example.com") == 0
 
 
+def test_expired_login_cooldowns_do_not_stay_in_the_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cooldown dict is process-wide; it cannot grow one name per attempt."""
+    for index in range(20):
+        with pytest.raises(AuthError):
+            SpGroupClient(transport=FixtureTransport(fail_login=True)).login(
+                f"user{index}@example.com", "a"
+            )
+    assert len(client_module._LOGIN_FAILURES) == 20
+
+    later = time.monotonic() + LOGIN_RETRY_COOLDOWN_SECONDS
+    monkeypatch.setattr(time, "monotonic", lambda: later)
+    with pytest.raises(AuthError):
+        SpGroupClient(transport=FixtureTransport(fail_login=True)).login(
+            "user20@example.com", "a"
+        )
+
+    # Only the name that just failed is still throttled; the twenty before it
+    # were past their cooldown and could not act on anything.
+    assert list(client_module._LOGIN_FAILURES) == ["user20@example.com"]
+    assert _login_cooldown("user0@example.com") == 0
+
+
 def test_upstream_error_text_is_stripped_and_bounded() -> None:
     """Hostile error text reaches the log and the reauth dialog; cap it there."""
     hostile = "wrong password ‮" + "x" * 500 + "\x1b[31m"
