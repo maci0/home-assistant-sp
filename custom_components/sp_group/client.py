@@ -88,6 +88,7 @@ from .const import (
     NJORD_PAYABLES_PATH,
     NOTIFICATIONS_PATH,
     OAUTH_TOKEN_PATH,
+    OPTIONAL_ABSENT_STATUSES,
     OPTIONAL_HTTP_TIMEOUT_SECONDS,
     PRICEPLAN_PATH,
     PUBLIC_HOST,
@@ -345,6 +346,10 @@ class Session:
     id_token: str
     refresh_token: str | None
     expires_at: int | None = None
+    # The scope Auth0 granted, which can be narrower than AUTH0_SCOPE. A read
+    # the grant does not cover fails with a 403, and the scope is what says
+    # which read, so keep it with the session instead of only the constant.
+    scope: str | None = None
 
     def is_expired(self, epoch: int) -> bool:
         if self.expires_at is None:
@@ -379,12 +384,54 @@ def _require_json(response: HttpResponse, label: str) -> object:
         ) from exc
 
 
-def _optional_json(response: HttpResponse) -> object | None:
+def _read_label(method: str, url: str) -> str:
+    """Name a read for the log: the method and the redacted URL."""
+    return f"{method} {_loggable_url(url)}"
+
+
+def _server_message(response: HttpResponse) -> str:
+    """Whatever the host said went wrong, quoted short and redacted.
+
+    Error text reaches the Home Assistant log, so it is truncated: a hostile or
+    broken gateway can put a megabyte in the body.
+    """
+    try:
+        decoded = _decode_json(response.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ""
+    if not isinstance(decoded, dict):
+        return ""
+    message = str(
+        decoded.get("error_description")
+        or decoded.get("error")
+        or decoded.get("message")
+        or ""
+    )
+    return f": {message[:ERROR_VALUE_CHARS]}" if message else ""
+
+
+def _optional_json(response: HttpResponse, label: str) -> object | None:
+    """Decode an optional read, or None when the host reported no data.
+
+    A status in OPTIONAL_ABSENT_STATUSES means the read had nothing to report
+    and is not an error. Any other error status is a failed read, and it is
+    logged with the server's own message: without it a 401 on every poll drops
+    a sensor with no trace of why, which reads as "no usage" rather than
+    "the token was rejected".
+    """
     if response.status >= 400:
+        if response.status not in OPTIONAL_ABSENT_STATUSES:
+            _LOGGER.warning(
+                "%s returned HTTP %s%s",
+                label,
+                response.status,
+                _server_message(response),
+            )
         return None
     try:
         return _decode_json(response.body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        _LOGGER.warning("%s returned a body that is not JSON: %s", label, exc)
         return None
 
 
@@ -562,11 +609,13 @@ def _session_from_oauth(
     if not isinstance(id_token, str) or not id_token:
         raise AuthError("invalid_grant", "id_token missing")
     refresh = mapping.get("refresh_token")
+    scope = mapping.get("scope")
     return Session(
         access_token=access_token,
         id_token=id_token,
         refresh_token=refresh if isinstance(refresh, str) else fallback_refresh,
         expires_at=_jwt_exp(access_token),
+        scope=scope if isinstance(scope, str) else None,
     )
 
 
@@ -1401,12 +1450,17 @@ class SpGroupClient:
         """Pick a factor and send the SMS/email challenge when that is the path.
 
         Returns ``("oob", oob_code)`` only when the challenge produced a usable
-        code. Probe or challenge failures fall back to ``("totp", None)``.
+        code. Probe or challenge failures fall back to ``("totp", None)`` and
+        are logged with their cause, because the caller shows a single-code
+        form the user would otherwise read as the account having no other
+        factor.
         """
         try:
             factor = _pick_mfa_factor(self.list_mfa_authenticators(mfa_token))
         except (AuthError, UsageError, OSError) as exc:
-            _LOGGER.debug("mfa factor probe failed, offering TOTP: %s", exc)
+            _LOGGER.warning(
+                "listing MFA factors failed (%s); asking for a TOTP code instead", exc
+            )
             return "totp", None
         authenticator_id = _oob_factor_authenticator_id(factor)
         if authenticator_id is None:
@@ -1414,7 +1468,11 @@ class SpGroupClient:
         try:
             challenge = self.challenge_mfa(mfa_token, authenticator_id)
         except (AuthError, UsageError, OSError) as exc:
-            _LOGGER.debug("mfa challenge failed, offering TOTP: %s", exc)
+            _LOGGER.warning(
+                "sending the out-of-band MFA challenge failed (%s); "
+                "asking for a TOTP code instead",
+                exc,
+            )
             return "totp", None
         return _mfa_channel_from_challenge(factor, challenge)
 
@@ -1579,10 +1637,13 @@ class SpGroupClient:
         path: str,
         timeout: int = OPTIONAL_HTTP_TIMEOUT_SECONDS,
     ) -> object | None:
+        url = f"{B2C_HOST}{path}"
         response = self._optional_response(
-            "GET", f"{B2C_HOST}{path}", self._auth_headers(session), None, timeout
+            "GET", url, self._auth_headers(session), None, timeout
         )
-        return None if response is None else _optional_json(response)
+        if response is None:
+            return None
+        return _optional_json(response, _read_label("GET", url))
 
     def _optional_post(
         self,
@@ -1593,10 +1654,11 @@ class SpGroupClient:
     ) -> object | None:
         headers = dict(self._auth_headers(session))
         headers["Content-Type"] = CONTENT_TYPE_JSON
-        response = self._optional_response(
-            "POST", f"{B2C_HOST}{path}", headers, payload, timeout
-        )
-        return None if response is None else _optional_json(response)
+        url = f"{B2C_HOST}{path}"
+        response = self._optional_response("POST", url, headers, payload, timeout)
+        if response is None:
+            return None
+        return _optional_json(response, _read_label("POST", url))
 
     def _fetch_usage_with(self, session: Session) -> UsageReadings:
         me_response = self._jarvis_get(session, JARVIS_ME_PATH)
@@ -1617,7 +1679,7 @@ class SpGroupClient:
             ppms_future = pool.submit(self._fetch_ppms, session, info)
             ami_future = pool.submit(self._fetch_ami, session, info)
             meter_reading, meter_registers = meter_future.result()
-            ppms_credit = ppms_future.result()
+            ppms_credit, ppms_updated_at = ppms_future.result()
             ami_hourly, ami_daily = ami_future.result()
         if (
             electricity is None
@@ -1650,6 +1712,7 @@ class SpGroupClient:
             gas=gas,
             meter_reading=meter_reading,
             ppms_credit=ppms_credit,
+            ppms_updated_at=ppms_updated_at,
             ami_hourly=ami_hourly,
             ami_daily=ami_daily,
             last_bill=last_bill,
@@ -1743,16 +1806,19 @@ class SpGroupClient:
     def _fetch_eva(
         self, session: Session
     ) -> tuple[EvSessionInfo | None, EvChargeInfo | None, EvUnpaidInfo | None]:
+        eva_url = f"{B2C_HOST}{EVA_LATEST_SESSION_PATH}"
         response = self._optional_response(
             "GET",
-            f"{B2C_HOST}{EVA_LATEST_SESSION_PATH}",
+            eva_url,
             self._auth_headers(session),
             None,
             OPTIONAL_HTTP_TIMEOUT_SECONDS,
         )
         if response is None or _eva_scope_denied(response):
             return None, None, None
-        ev_session = _parse_ev_session(_optional_json(response))
+        ev_session = _parse_ev_session(
+            _optional_json(response, _read_label("GET", eva_url))
+        )
         history_qs = urlencode({"offSet": "0", "pageSize": "5"})
         history_path = f"{EVA_CHARGE_HISTORY_PATH}?{history_qs}"
         ev_last_charge = _parse_ev_last_charge(
@@ -1804,23 +1870,31 @@ class SpGroupClient:
 
     def _fetch_tariff(self, electricity: UtilitySeries | None) -> TariffInfo | None:
         query = urlencode({"consumption": _tariff_consumption(electricity)})
+        url = f"{PUBLIC_HOST}{PRICEPLAN_PATH}?{query}"
         response = self._optional_response(
             "GET",
-            f"{PUBLIC_HOST}{PRICEPLAN_PATH}?{query}",
+            url,
             {"User-Agent": USER_AGENT, "Accept": "application/json"},
             None,
         )
-        return None if response is None else _parse_tariff(_optional_json(response))
-
-    def _fetch_ppms(self, session: Session, premise: PremiseInfo) -> float | None:
-        if not premise.ppms_exists:
+        if response is None:
             return None
+        return _parse_tariff(_optional_json(response, _read_label("GET", url)))
+
+    def _fetch_ppms(
+        self, session: Session, premise: PremiseInfo
+    ) -> tuple[float | None, str | None]:
+        if not premise.ppms_exists:
+            return None, None
         body = self._optional_get(
             session, f"{JARVIS_PPMS_PATH}/{premise.id}", timeout=HTTP_TIMEOUT_SECONDS
         )
         if not isinstance(body, dict):
-            return None
-        return _optional_float(body.get("amount"))
+            return None, None
+        return (
+            _optional_float(body.get("amount")),
+            _optional_str(body.get("updated_at")),
+        )
 
     def _fetch_bills(
         self, session: Session, account_number: str | None
@@ -1886,7 +1960,20 @@ class SpGroupClient:
         body = self._optional_post(
             session, JARVIS_AMI_PATH, payload, timeout=HTTP_TIMEOUT_SECONDS
         )
-        return _parse_ami_rows(body)
+        periods = _parse_ami_rows(body)
+        if body is not None and not periods:
+            # A body that parsed but carried no usable slot is not the same as
+            # no body, and only one of the two means the window is empty. Left
+            # unlogged, a response shape change stops the energy statistics
+            # updating with every sensor still reading normally.
+            _LOGGER.warning(
+                "%s read a body with no usable %s slots for %s to %s",
+                _read_label("POST", f"{B2C_HOST}{JARVIS_AMI_PATH}"),
+                grouped_by,
+                _ami_stamp(start),
+                _ami_stamp(end),
+            )
+        return periods
 
     def _raise_auth_if_denied(self, response: HttpResponse, label: str) -> None:
         if response.status < 400:

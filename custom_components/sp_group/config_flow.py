@@ -78,6 +78,19 @@ def _auth_error_key(exc: AuthError) -> str:
     return "invalid_auth"
 
 
+def _report_failure(step: str, exc: Exception, errors: dict[str, str]) -> None:
+    """Set the form error and log the cause of a failed validation.
+
+    The form key is what the user acts on, and it is one of two strings, so on
+    its own it says nothing about why SP Group refused the login. The log line
+    carries the exception and its traceback, so an Auth0 outage or a rejected
+    password is diagnosable from the log alone.
+    """
+    key = _auth_error_key(exc) if isinstance(exc, AuthError) else "cannot_connect"
+    errors["base"] = key
+    _LOGGER.warning("SP Group %s failed: %s", step, exc, exc_info=exc)
+
+
 class SpGroupOptionsFlow(config_entries.OptionsFlow):
     """A fixed electricity price so the Energy dashboard can show cost."""
 
@@ -106,6 +119,9 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
 
 class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    # Written by _start_mfa and read only by async_step_mfa, which the flow
+    # cannot reach without it.
+    _mfa_context: dict[str, Any]
 
     @staticmethod
     @callback
@@ -183,11 +199,9 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     exchange,
                 )
             except AuthError as exc:
-                _LOGGER.warning("mfa code rejected: %s", exc)
-                errors["base"] = _auth_error_key(exc)
+                _report_failure("MFA code exchange", exc, errors)
             except (UsageError, OSError) as exc:
-                _LOGGER.warning("mfa step could not read the account: %s", exc)
-                errors["base"] = "cannot_connect"
+                _report_failure("MFA code exchange", exc, errors)
             else:
                 entry = context["entry"]
                 if entry is None:
@@ -212,11 +226,9 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 mfa = await self._start_mfa(exc, user_input, None)
                 if mfa is not None:
                     return mfa
-                _LOGGER.warning("login rejected during setup: %s", exc)
-                errors["base"] = _auth_error_key(exc)
+                _report_failure("login", exc, errors)
             except (UsageError, OSError) as exc:
-                _LOGGER.warning("setup could not read the account: %s", exc)
-                errors["base"] = "cannot_connect"
+                _report_failure("login", exc, errors)
             else:
                 return self.async_create_entry(
                     title="SP Group",
@@ -270,11 +282,9 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 mfa = await self._start_mfa(exc, user_input, entry)
                 if mfa is not None:
                     return mfa
-                _LOGGER.warning("login rejected while reauthenticating: %s", exc)
-                errors["base"] = _auth_error_key(exc)
+                _report_failure(step_id, exc, errors)
             except (UsageError, OSError) as exc:
-                _LOGGER.warning("reauthentication could not read the account: %s", exc)
-                errors["base"] = "cannot_connect"
+                _report_failure(step_id, exc, errors)
             else:
                 await self.async_set_unique_id(fold_text(user_input[CONF_USERNAME]))
                 self._abort_if_unique_id_mismatch()

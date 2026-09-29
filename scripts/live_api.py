@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import os
 import sys
+from io import TextIOWrapper
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -20,10 +22,9 @@ from custom_components.sp_group.client import (
 def main() -> int:
     # SP text is UTF-8 and a parse error quotes it back; on a C-locale
     # terminal the print would raise instead of reporting the failure.
-    # A TextIO without reconfigure has no encoding knob to turn.
-    reconfigure = getattr(sys.stdout, "reconfigure", None)
-    if reconfigure is not None:
-        reconfigure(encoding="utf-8", errors="backslashreplace")
+    cast(TextIOWrapper, sys.stdout).reconfigure(
+        encoding="utf-8", errors="backslashreplace"
+    )
     username = os.environ.get("SP_USERNAME", "").strip()
     password = os.environ.get("SP_PASSWORD", "")
     if not username or not password:

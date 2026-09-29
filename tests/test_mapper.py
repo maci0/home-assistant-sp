@@ -201,15 +201,13 @@ def test_amount_due_carries_the_payable_currency() -> None:
     due = replace(usage.amount_due, currency="usd")
     usage = replace(usage, amount_due=due)
 
-    spec = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}[
-        SENSOR_KEY_AMOUNT_DUE
-    ]
+    by_key = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
+    spec = by_key[SENSOR_KEY_AMOUNT_DUE]
 
     assert spec.native_value == pytest.approx(203.69)
     assert spec.unit_of_measurement == "USD"
-    assert (
-        extra_attributes(usage, SENSOR_KEY_AMOUNT_DUE, FIXED_NOW)["currency"] == "usd"
-    )
+    attrs = extra_attributes(usage, SENSOR_KEY_AMOUNT_DUE, FIXED_NOW)
+    assert attrs["currency"] == "usd"
 
 
 @pytest.mark.parametrize(
@@ -226,9 +224,8 @@ def test_ev_unpaid_falls_back_to_the_order_count(
 ) -> None:
     usage = _usage_with(ev_unpaid=unpaid)
 
-    spec = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}[
-        SENSOR_KEY_EV_UNPAID
-    ]
+    by_key = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
+    spec = by_key[SENSOR_KEY_EV_UNPAID]
 
     assert spec.native_value == expected_value
     assert spec.unit_of_measurement == expected_unit
@@ -292,9 +289,8 @@ def test_ppms_credit_sensor_appears_only_when_enrolled() -> None:
         item.key for item in sensors_from_usage(_usage_with(), FIXED_NOW)
     }
 
-    spec = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}[
-        SENSOR_KEY_PPMS
-    ]
+    by_key = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
+    spec = by_key[SENSOR_KEY_PPMS]
 
     assert spec.native_value == pytest.approx(42.5)
     assert spec.device_class == DEVICE_CLASS_MONETARY

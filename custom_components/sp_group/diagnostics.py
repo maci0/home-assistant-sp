@@ -39,6 +39,7 @@ async def async_get_config_entry_diagnostics(
         "has_retailer": bool(usage.premise.retailer_name),
         "ppms_exists": usage.premise.ppms_exists,
         "ppms_credit": usage.ppms_credit,
+        "ppms_updated_at": usage.ppms_updated_at,
         "electricity_kwh": usage.electricity_kwh,
         "water_m3": usage.water_m3,
         "has_gas": usage.gas is not None,

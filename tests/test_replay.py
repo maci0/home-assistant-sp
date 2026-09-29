@@ -93,7 +93,7 @@ def test_today_kwh_sums_the_slots_of_the_clocks_day() -> None:
         if slot.start.astimezone(SG_TZ).date() == FIXED_NOW.date()
     )
 
-    def today_kwh(now: FixedClock) -> float | None:
+    def today_kwh(now: FixedClock) -> float | str | None:
         specs = sensors_from_usage(usage, now.now())
         return next(
             spec.native_value

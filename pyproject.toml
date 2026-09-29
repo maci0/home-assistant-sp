@@ -55,6 +55,9 @@ select = [
 "scripts/*.py" = ["E402"]
 # The fuzz corpus is ambiguous digits on purpose: they are what the parser must survive.
 "tests/test_fuzz.py" = ["RUF001"]
+# Same for the fold and sensor-key tests: full-width codes and an en dash are
+# the characters the folding and key rules have to keep apart.
+"tests/test_mapper.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

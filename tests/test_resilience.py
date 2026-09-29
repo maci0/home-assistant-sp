@@ -105,6 +105,36 @@ def test_tariff_host_failure_leaves_tariff_unset() -> None:
     assert usage.tariff is None
 
 
+def test_rejected_optional_read_is_logged_not_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 401 on an optional read drops the sensor and must say why."""
+    transport = FixtureTransport(
+        responses={
+            TYCHE_WALLET_PATH: HttpResponse(
+                401, b'{"error":"invalid_token","error_description":"token expired"}'
+            )
+        }
+    )
+    with caplog.at_level("WARNING"):
+        usage = fixture_client(transport).fetch_usage()
+
+    assert usage.ev_wallet is None
+    assert "401" in caplog.text
+    assert "token expired" in caplog.text
+    assert TYCHE_WALLET_PATH in caplog.text
+
+
+def test_absent_optional_read_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """A 404 is the endpoint saying the read has nothing, so it is not noise."""
+    transport = FixtureTransport(responses={TYCHE_WALLET_PATH: HttpResponse(404, b"")})
+    with caplog.at_level("WARNING"):
+        usage = fixture_client(transport).fetch_usage()
+
+    assert usage.ev_wallet is None
+    assert caplog.text == ""
+
+
 def test_identity_host_outage_is_not_reported_as_bad_credentials() -> None:
     """A 5xx from Auth0 must not push Home Assistant into a reauth flow."""
     client = SpGroupClient(

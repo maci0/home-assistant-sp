@@ -121,7 +121,9 @@ Required, in order:
 A failed or empty `/jarvis/v3/me` or `/jarvis/v4/charts` aborts the poll. Steps
 4 to 9 are best effort: an error or an empty payload skips whatever that call
 feeds, so a missing entity means that one read returned nothing, not that the
-whole update failed.
+whole update failed. Every skipped read except a 404 is logged with the route
+and the status, so a sensor that never appears leaves a log line naming the
+call that failed.
 
 Then optional reads (8s HTTP timeout each). 4xx or empty payloads skip the matching sensor:
 

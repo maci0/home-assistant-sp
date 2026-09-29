@@ -212,6 +212,10 @@ def extra_attributes(
             attrs["giro_enabled"] = due.giro_enabled
             attrs["recurring_enabled"] = due.recurring_enabled
         return _omit_none(attrs)
+    if key == SENSOR_KEY_PPMS:
+        if usage.ppms_credit is not None:
+            attrs["updated_at"] = usage.ppms_updated_at
+        return _omit_none(attrs)
     if key in {SENSOR_KEY_ELECTRICITY_METER, SENSOR_KEY_WATER_METER}:
         meter = usage.meter(
             "electric" if key == SENSOR_KEY_ELECTRICITY_METER else "water"

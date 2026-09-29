@@ -118,6 +118,11 @@ AUTH_REJECT_STATUSES = frozenset({400, 401, 403})
 OAUTH_ERROR_MFA_REQUIRED = "mfa_required"
 OAUTH_ERROR_REQUIRES_VERIFICATION = "requires_verification"
 
+# How an optional read reports that the thing it reads does not exist: no paired
+# FCU, no charge receipt yet. Any other error status on an optional read is a
+# failed read rather than an absent one, and is logged instead of dropped.
+OPTIONAL_ABSENT_STATUSES = frozenset({404})
+
 TARIFF_DEFAULT_CONSUMPTION_KWH = 350
 EVA_INTEGER_CENTS_MIN = 100
 

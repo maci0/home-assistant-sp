@@ -420,7 +420,7 @@ def test_fuzz_json_decoding_never_leaks_a_raw_exception() -> None:
         except Exception as exc:  # a bare crash is exactly what this looks for
             raise AssertionError(f"{where}: _require_json {exc!r}") from exc
         try:
-            client_module._optional_json(response)
+            client_module._optional_json(response, "fuzz optional read")
             client_module._eva_scope_denied(HttpResponse(status=403, body=bytes(body)))
         except Exception as exc:  # a bare crash is exactly what this looks for
             raise AssertionError(f"{where}: optional read {exc!r}") from exc
