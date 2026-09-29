@@ -117,15 +117,11 @@ def test_today_kwh_buckets_in_singapore_time_not_utc() -> None:
     usage = replace(
         fixture_client().fetch_usage(),
         ami_hourly=(
-            PeriodReading(
-                start=datetime(2026, 8, 1, 16, 30, tzinfo=UTC), amount=1.5
-            ),
+            PeriodReading(start=datetime(2026, 8, 1, 16, 30, tzinfo=UTC), amount=1.5),
         ),
     )
     specs = sensors_from_usage(usage, FIXED_NOW)
     today = next(
-        spec.native_value
-        for spec in specs
-        if spec.key == SENSOR_KEY_ELECTRICITY_TODAY
+        spec.native_value for spec in specs if spec.key == SENSOR_KEY_ELECTRICITY_TODAY
     )
     assert today == pytest.approx(1.5)

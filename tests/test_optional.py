@@ -472,9 +472,7 @@ def test_tariff_consumption_uses_the_newest_period_not_the_last_row() -> None:
             total=0.0,
             unit="kWh",
             periods=tuple(
-                PeriodReading(
-                    start=FIXED_NOW - timedelta(days=age), amount=amount
-                )
+                PeriodReading(start=FIXED_NOW - timedelta(days=age), amount=amount)
                 for age, amount in amounts
             ),
             average=None,

@@ -210,11 +210,10 @@ def test_daily_points_survive_when_the_half_hour_feed_is_empty() -> None:
 
 def test_a_premise_without_ami_graphs_its_billed_periods() -> None:
     """No AMI window anywhere: the graph is the billed series, not nothing."""
-    usage = dataclasses.replace(
-        fixture_client().fetch_usage(), ami_hourly=(), ami_daily=()
-    )
+    client = fixture_client()
+    usage = dataclasses.replace(client.fetch_usage(), ami_hourly=(), ami_daily=())
 
-    graph = electricity_graph_periods(usage)
+    graph = electricity_view(usage, client.clock.now()).graph
 
     assert graph == usage.electricity_periods
     assert graph, "the fallback needs billed periods to be meaningful"

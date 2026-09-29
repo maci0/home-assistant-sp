@@ -61,7 +61,7 @@ def test_an_absent_optional_read_is_not_recorded(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A 404 is the account not being enrolled, which every poll would repeat."""
-    transport = FixtureTransport(smrd_fixture=None)
+    transport = FixtureTransport(responses={SMRD_PATH: HttpResponse(404, b"{}")})
     client = fixture_client(transport)
     with caplog.at_level(logging.WARNING):
         client.fetch_usage()
