@@ -81,6 +81,10 @@ class SpGroupSensor(CoordinatorEntity[SpGroupCoordinator], SensorEntity):
         self._attr_translation_key = spec.translation_key
         if spec.name:
             self._attr_name = spec.name
+        elif hasattr(self, "_attr_name"):
+            # _attr_name outranks the translation key, so a spec that lost its
+            # name (a coil SP no longer labels) would keep showing the old one.
+            del self._attr_name
         unit = spec.unit_of_measurement
         self.entity_description = SensorEntityDescription(
             key=spec.key,

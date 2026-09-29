@@ -211,6 +211,17 @@ SENSOR_KEY_BILL_DELIVERY = "bill_delivery"
 SENSOR_KEY_FCU = "fcu"
 SENSOR_KEY_TARIFF = "tariff"
 
+# Display names for the imported recorder statistics. Unlike an entity name,
+# a statistic name is written to the database with the first row of the
+# series and is never translated afterwards, so these stay English and stay
+# fixed: the README and the options description tell the user which name to
+# pick in the Energy settings. A sensor key is not a name, so each series
+# names itself rather than interpolating its key.
+STATISTIC_NAME_ELECTRICITY = "SP Group electricity"
+STATISTIC_NAME_GAS = "SP Group gas"
+STATISTIC_NAME_ELECTRICITY_COST = "SP Group electricity cost"
+STATISTIC_NAME_BILL = "SP Group bill"
+
 # States this integration generates itself. Each one needs a matching
 # entity.sensor.<key>.state entry in strings.json, or the raw value shows
 # untranslated. Values reported by SP (account status, EV session) are passed

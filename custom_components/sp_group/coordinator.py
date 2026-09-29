@@ -27,6 +27,10 @@ from .const import (
     SENSOR_KEY_GAS,
     SENSOR_KEY_LAST_BILL,
     STATISTIC_KEY_ELECTRICITY_COST,
+    STATISTIC_NAME_BILL,
+    STATISTIC_NAME_ELECTRICITY,
+    STATISTIC_NAME_ELECTRICITY_COST,
+    STATISTIC_NAME_GAS,
     UNIT_KWH,
     UNIT_SGD,
     UPDATE_INTERVAL,
@@ -47,7 +51,7 @@ from .mapper import (
     electricity_graph_periods,
     extra_attributes,
 )
-from .models import PeriodReading, UsageReadings
+from .models import UsageReadings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -269,7 +273,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 "unit_of_measurement": unit,
             }
 
-        series: list[tuple[str, tuple[PeriodReading, ...], str, str]] = []
+        series: list[tuple[str, tuple, str, str, str]] = []
         if usage.electricity is not None:
             periods = electricity_graph_periods(usage)
             series.append(
@@ -278,6 +282,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                     periods if periods else usage.electricity.periods,
                     UNIT_KWH,
                     "energy",
+                    STATISTIC_NAME_ELECTRICITY,
                 )
             )
         if usage.gas is not None:
@@ -287,18 +292,19 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                     usage.gas.periods,
                     usage.gas.unit,
                     "energy" if usage.gas.unit == UNIT_KWH else "volume",
+                    STATISTIC_NAME_GAS,
                 )
             )
 
         price = self.electricity_price
-        for key, periods, unit, unit_class in series:
+        for key, periods, unit, unit_class, name in series:
             points = cumulative_points(periods)
             if not points:
                 continue
             self._add_external_statistics(
                 usage.premise_id,
                 external_statistic_id(usage.premise_id, key),
-                metadata(key, f"SP Group {key}", unit, unit_class),
+                metadata(key, name, unit, unit_class),
                 points,
                 lambda point: point.cumulative,
             )
@@ -310,7 +316,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                     ),
                     metadata(
                         STATISTIC_KEY_ELECTRICITY_COST,
-                        "SP Group electricity cost",
+                        STATISTIC_NAME_ELECTRICITY_COST,
                         UNIT_SGD,
                         None,
                     ),
@@ -322,7 +328,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             self._add_external_statistics(
                 usage.premise_id,
                 external_statistic_id(usage.premise_id, SENSOR_KEY_LAST_BILL),
-                metadata(SENSOR_KEY_LAST_BILL, "SP Group bill", UNIT_SGD, None),
+                metadata(SENSOR_KEY_LAST_BILL, STATISTIC_NAME_BILL, UNIT_SGD, None),
                 bill_points,
                 lambda point: point.amount,
             )
