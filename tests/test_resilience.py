@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import threading
+import time
 from collections.abc import Mapping
 from io import BytesIO
 from ssl import SSLError
@@ -21,6 +24,7 @@ from custom_components.sp_group.client import (
     UsageError,
 )
 from custom_components.sp_group.const import (
+    AUTH0_REFRESH_GRANT,
     EVA_LATEST_SESSION_PATH,
     IDENTITY_HOST,
     JARVIS_ME_PATH,
@@ -30,6 +34,7 @@ from custom_components.sp_group.const import (
     PUBLIC_HOST,
     TYCHE_WALLET_PATH,
 )
+from custom_components.sp_group.models import UsageReadings
 
 from .conftest import FixtureTransport, fixture_client
 
@@ -200,3 +205,98 @@ def test_urllib_transport_keeps_http_error_bodies() -> None:
         response = UrllibTransport().request("POST", url, {}, b"{}")
     assert response.status == 403
     assert b"invalid_grant" in response.body
+
+
+class RotatingRefreshTransport(FixtureTransport):
+    """Auth0 refresh-token rotation: a spent refresh token is rejected.
+
+    Every exchange returns a distinct refresh token, and the second exchange of
+    the same one is refused, which is what a real rotation does. A refresh
+    sleeps briefly so concurrent callers overlap the window where the stored
+    session still reads as expired.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._live_refresh = "starting-refresh-token"
+        self.refresh_grants = 0
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        *,
+        timeout: int | None = None,
+    ) -> HttpResponse:
+        if urlparse(url).path != OAUTH_TOKEN_PATH:
+            return super().request(method, url, headers, body, timeout=timeout)
+        request_body = json.loads(body.decode("utf-8")) if body else {}
+        if request_body.get("grant_type") != AUTH0_REFRESH_GRANT:
+            return super().request(method, url, headers, body, timeout=timeout)
+        with self._lock:
+            spent = self._live_refresh
+            if spent != request_body.get("refresh_token"):
+                return HttpResponse(
+                    status=403,
+                    body=b'{"error":"invalid_grant",'
+                    b'"error_description":"refresh token revoked"}',
+                )
+            self.refresh_grants += 1
+            self._live_refresh = f"rotated-refresh-token-{self.refresh_grants}"
+            payload = {
+                "access_token": f"access-token-{self.refresh_grants}",
+                "id_token": f"id-token-{self.refresh_grants}",
+                "refresh_token": self._live_refresh,
+                "scope": "openid offline_access",
+            }
+        time.sleep(0.05)
+        return HttpResponse(
+            status=200, body=json.dumps(payload).encode("utf-8")
+        )
+
+
+def test_concurrent_fetches_spend_the_refresh_token_once() -> None:
+    """Two polls racing an expired session must not rotate the token twice.
+
+    The second exchange of an already-spent refresh token is rejected by Auth0,
+    which would surface as a reauth prompt for a session that is still good, and
+    its rejected retry would leave a dead refresh token stored for the next poll.
+    """
+    transport = RotatingRefreshTransport()
+    client = SpGroupClient(
+        transport=transport,
+        session=Session(
+            access_token="expired-access-token",
+            id_token="expired-id-token",
+            refresh_token="starting-refresh-token",
+            scope=None,
+            expires_at=0,
+        ),
+    )
+    readers = 8
+    start = threading.Barrier(readers)
+    fetched: list[UsageReadings] = []
+    failures: list[Exception] = []
+
+    def _poll() -> None:
+        start.wait()
+        try:
+            fetched.append(client.fetch_usage())
+        except Exception as exc:  # reported below, not swallowed
+            failures.append(exc)
+
+    threads = [threading.Thread(target=_poll) for _ in range(readers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "a poll thread hung"
+
+    assert failures == []
+    assert len(fetched) == readers
+    assert transport.refresh_grants == 1
+    assert client.session is not None
+    assert client.session.refresh_token == "rotated-refresh-token-1"

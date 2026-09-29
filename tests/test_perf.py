@@ -77,7 +77,7 @@ def test_specs_built_once_per_usage(monkeypatch) -> None:
 
     cache.specs(_usage())
     assert len(builds) == 2, "a new poll must invalidate the cache"
-    assert cache.specs(None) == []
+    assert cache.specs(None) == ()
     assert len(builds) == 3
 
 

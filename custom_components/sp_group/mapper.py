@@ -614,15 +614,18 @@ class SensorSpecCache:
     Every entity reads the spec list on each coordinator update. The list walks
     the whole AMI window, so building it per entity costs one fold-and-merge of
     ~1,900 period rows per entity per poll. The coordinator holds one cache;
-    a new ``UsageReadings`` object (a new poll) invalidates it.
+    a new ``UsageReadings`` object (a new poll) invalidates it. The key and the
+    specs are published as one immutable tuple, so a reader sees either the
+    previous poll's specs or the new poll's, never a mix, and cannot hand one
+    reader a list another reader is iterating.
     """
 
     def __init__(self) -> None:
-        self._usage: UsageReadings | None = None
-        self._specs: list[SensorSpec] = []
+        self._cached: tuple[UsageReadings | None, tuple[SensorSpec, ...]] = (None, ())
 
-    def specs(self, usage: UsageReadings | None) -> list[SensorSpec]:
-        if usage is not self._usage:
-            self._usage = usage
-            self._specs = sensors_from_usage(usage)
-        return self._specs
+    def specs(self, usage: UsageReadings | None) -> tuple[SensorSpec, ...]:
+        cached_usage, cached_specs = self._cached
+        if usage is not cached_usage:
+            cached_specs = tuple(sensors_from_usage(usage))
+            self._cached = (usage, cached_specs)
+        return cached_specs

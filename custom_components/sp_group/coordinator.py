@@ -57,11 +57,12 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         self.entry = entry
         self._stats_lock = asyncio.Lock()
         self._stats_task: asyncio.Task[None] | None = None
+        self._stats_stopped = False
         self._imported_price: float | None = None
         self._spec_cache = SensorSpecCache()
 
     @property
-    def sensor_specs(self) -> list[SensorSpec]:
+    def sensor_specs(self) -> tuple[SensorSpec, ...]:
         """The current sensor specs, built once per poll for every entity."""
         return self._spec_cache.specs(self.data)
 
@@ -83,6 +84,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
 
     async def async_stop_stats_import(self) -> None:
         """Cancel an import still writing statistics when the entry goes away."""
+        self._stats_stopped = True
         task = self._stats_task
         self._stats_task = None
         if task is None or task.done():
@@ -127,6 +129,10 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         self.hass.config_entries.async_update_entry(self.entry, data=payload)
 
     def _schedule_stats_import(self) -> None:
+        # A poll still in flight when the entry unloads finishes after
+        # async_stop_stats_import, so the stop flag gates the reschedule too.
+        if self._stats_stopped:
+            return
         task = self._stats_task
         if task is not None and not task.done():
             return
@@ -174,6 +180,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 )
             )
 
+        price = self.electricity_price
         for key, periods, unit, unit_class in series:
             points = cumulative_points(periods)
             if not points:
@@ -196,7 +203,6 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 for point in points
             ]
             async_add_external_statistics(self.hass, metadata, stats)
-            price = self.electricity_price
             if key == SENSOR_KEY_ELECTRICITY and price is not None:
                 cost_metadata = {
                     "has_sum": True,
@@ -218,7 +224,9 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                     for point in cost_points(points, price)
                 ]
                 async_add_external_statistics(self.hass, cost_metadata, cost_stats)
-            self._imported_price = price
+        # One write per import: the per-series position skipped accounts with no
+        # billable electricity, so every options update re-imported for them.
+        self._imported_price = price
         bill_points = monthly_bill_points(usage.bills)
         if bill_points:
             metadata = {

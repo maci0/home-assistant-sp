@@ -18,11 +18,13 @@ import json
 import logging
 import math
 import ssl
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from http.client import HTTPException
+from typing import TypeGuard
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -191,6 +193,15 @@ class Session:
         if self.expires_at is None:
             return False
         return int(time.time()) >= self.expires_at - TOKEN_EXPIRY_BUFFER_SECONDS
+
+
+def _session_is_live(session: Session | None) -> TypeGuard[Session]:
+    """A session that can still authenticate a read, so needs no refresh."""
+    return (
+        session is not None
+        and bool(session.access_token)
+        and not session.is_expired()
+    )
 
 
 def _decode_json(body: bytes) -> object:
@@ -1008,6 +1019,11 @@ class SpGroupClient:
     ) -> None:
         self._transport = transport or UrllibTransport()
         self._session = session
+        # Auth0 rotates the refresh token: every exchange retires the token it
+        # spent, so a second exchange of the same one is rejected and would
+        # discard a session that is already good. The lock serializes the
+        # exchange only; reading the session never blocks.
+        self._refresh_lock = threading.Lock()
 
     @property
     def session(self) -> Session | None:
@@ -1152,7 +1168,10 @@ class SpGroupClient:
         return _mfa_channel_from_challenge(factor, challenge)
 
     def refresh(self) -> Session:
-        current = self._session
+        with self._refresh_lock:
+            return self._exchange(self._session)
+
+    def _exchange(self, current: Session | None) -> Session:
         if current is None or not current.refresh_token:
             raise AuthError("invalid_grant", "refresh_token missing")
         payload = {
@@ -1168,17 +1187,23 @@ class SpGroupClient:
 
     def ensure_session(self) -> Session:
         current = self._session
-        if current is not None and not current.is_expired() and current.access_token:
+        if _session_is_live(current):
             return current
-        if current is not None and current.refresh_token:
+        if current is None or not current.refresh_token:
+            raise AuthError("invalid_grant", "login credentials required")
+        with self._refresh_lock:
+            # A concurrent fetch may have refreshed while this one waited; take
+            # that session rather than spend the retired refresh token again.
+            current = self._session
+            if _session_is_live(current):
+                return current
             try:
-                return self.refresh()
+                return self._exchange(current)
             except AuthError as exc:
                 raise AuthError(
                     "invalid_grant",
                     f"stored session expired and refresh was rejected: {exc}",
                 ) from exc
-        raise AuthError("invalid_grant", "login credentials required")
 
     def _post_json(
         self,
