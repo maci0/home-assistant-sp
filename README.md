@@ -217,6 +217,19 @@ from the environment, fixes the mutation sequence, so a failure names the seed
 and round that produced it; paste an offending payload into a case in `tests/`
 to keep it as a regression.
 
+### Text handling
+
+Every response body is decoded with `JSON_ENCODING` (`utf-8-sig`, which drops a
+gateway's byte-order mark), and every comparison of text SP Group sent goes
+through `fold_text` in `const.py`: NFKC, casefolded, stripped. That is what
+makes the NFC and NFD spellings of one account, one meter, or one coil name one
+identity, and a pasted trailing space not a second config entry. A protocol
+code the client branches on is server text too, so it is matched folded
+(`AuthError.error_folded`), and values that reach the Home Assistant log go
+through `_safe_text`, which drops control and bidi characters and caps the
+length. A length bound names its unit: the username is capped at
+`MAX_USERNAME_OCTETS` UTF-8 bytes, the way RFC 5321 caps an address.
+
 ### Determinism
 
 CI runs the gate under `LC_ALL=C.UTF-8`, `TZ=UTC` and `PYTHONHASHSEED=0`

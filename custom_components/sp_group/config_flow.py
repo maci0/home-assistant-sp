@@ -22,18 +22,18 @@ from .const import (
     OAUTH_ERROR_REQUIRES_VERIFICATION,
     fold_text,
     parse_electricity_price,
+    validate_username,
 )
 
-# RFC 5321 caps an address; the password bound only stops a pasted blob from
-# being sent as a request body.
-MAX_USERNAME_CHARS = 254
+# The password bound only stops a pasted blob from being sent as a request
+# body, so it stays a count of code points; the username is bounded in UTF-8
+# octets by validate_username, which is the unit RFC 5321 caps.
 MAX_PASSWORD_CHARS = 1024
 
-_USERNAME_VALIDATOR = vol.All(str, vol.Length(min=1, max=MAX_USERNAME_CHARS))
 _PASSWORD_VALIDATOR = vol.All(str, vol.Length(min=1, max=MAX_PASSWORD_CHARS))
 
 _CREDENTIALS = {
-    vol.Required(CONF_USERNAME): _USERNAME_VALIDATOR,
+    vol.Required(CONF_USERNAME): vol.All(str, validate_username),
     vol.Required(CONF_PASSWORD): _PASSWORD_VALIDATOR,
 }
 
@@ -97,8 +97,8 @@ def _price_field(value: object) -> float | str:
 
 def _auth_error_key(exc: AuthError) -> str:
     """The strings.json error key: the Auth0 code, or invalid_auth for the rest."""
-    if exc.error in {OAUTH_ERROR_REQUIRES_VERIFICATION, "too_many_attempts"}:
-        return exc.error
+    if exc.error_folded in {OAUTH_ERROR_REQUIRES_VERIFICATION, "too_many_attempts"}:
+        return exc.error_folded
     return "invalid_auth"
 
 
@@ -182,7 +182,7 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
         tell the user. A new account has no ``entry``; the MFA step then creates
         one instead of updating.
         """
-        if exc.error != OAUTH_ERROR_MFA_REQUIRED or not exc.mfa_token:
+        if exc.error_folded != OAUTH_ERROR_MFA_REQUIRED or not exc.mfa_token:
             return None
         self._mfa_context = {
             CONF_USERNAME: user_input[CONF_USERNAME],
@@ -324,7 +324,7 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
                     vol.Required(
                         CONF_USERNAME,
                         default=entry.data.get(CONF_USERNAME, ""),
-                    ): _USERNAME_VALIDATOR,
+                    ): vol.All(str, validate_username),
                 }
             ),
             errors=errors,

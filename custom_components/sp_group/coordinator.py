@@ -23,6 +23,7 @@ from .const import (
     CONF_ID_TOKEN,
     CONF_REFRESH_TOKEN,
     DOMAIN,
+    OAUTH_ERROR_REQUIRES_VERIFICATION,
     SENSOR_KEY_ELECTRICITY,
     SENSOR_KEY_GAS,
     SENSOR_KEY_LAST_BILL,
@@ -172,7 +173,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         got that far is a transient failure worth retrying.
         """
         if isinstance(exc, AuthError):
-            if exc.error == "requires_verification":
+            if exc.error_folded == OAUTH_ERROR_REQUIRES_VERIFICATION:
                 return UpdateFailed(
                     str(exc), **translated_error("requires_verification", exc)
                 )

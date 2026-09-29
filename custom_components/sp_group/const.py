@@ -119,6 +119,9 @@ AUTH_REJECT_STATUSES = frozenset({400, 401, 403})
 # Auth0 error codes this integration branches on.
 OAUTH_ERROR_MFA_REQUIRED = "mfa_required"
 OAUTH_ERROR_REQUIRES_VERIFICATION = "requires_verification"
+# Eva answers a token that lacks the read scope with this code, in ``error``
+# or inside ``error_description``.
+SCOPE_NOT_FOUND = "scope_not_found"
 
 # How an optional read reports that the thing it reads does not exist: no paired
 # FCU, no charge receipt yet. Any other error status on an optional read is a
@@ -135,6 +138,11 @@ EVA_INTEGER_CENTS_MIN = 100
 # balance, or credit, and the digits still fit with room to spare.
 MAX_MONEY = Decimal("1e12")
 MONEY_PRECISION = 20
+
+# RFC 5321 caps an address at 254 octets, so the username bound is counted in
+# UTF-8 bytes, not in code points: 254 astral code points is over a thousand
+# bytes on the wire, and 64 code points of one is already past the cap.
+MAX_USERNAME_OCTETS = 254
 
 # How SP spells the electricity utility in each payload. The SMRD registers say
 # "electric" and Green Goals say "elec"; both lookups fold before comparing, so
@@ -258,14 +266,34 @@ def parse_electricity_price(raw: object) -> float | None:
     return price if price > 0 else None
 
 
+def validate_username(raw: str) -> str:
+    """The username as typed, or a ValueError when it cannot be an address.
+
+    The length is in UTF-8 octets, because that is the unit RFC 5321 caps. A
+    lone surrogate has no UTF-8 form and is rejected here rather than raising
+    out of the flow when the credential is sent.
+    """
+    if not raw:
+        raise ValueError("username must not be empty")
+    try:
+        octets = len(raw.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise ValueError("username is not valid Unicode") from exc
+    if octets > MAX_USERNAME_OCTETS:
+        raise ValueError(f"username must be at most {MAX_USERNAME_OCTETS} bytes")
+    return raw
+
+
 def fold_text(value: str) -> str:
     """The one comparison form for text that came from outside this source.
 
     NFKC so the NFC and NFD spellings of an accented name are one value, and
     compatibility spellings (full-width, superscript) match their plain form;
-    casefold so the match does not depend on case.
+    casefold so the match does not depend on case; stripped so a pasted
+    trailing space or a non-breaking space does not make one account a
+    second account.
     """
-    return unicodedata.normalize("NFKC", value).casefold()
+    return unicodedata.normalize("NFKC", value).casefold().strip()
 
 
 def translated_error(key: str, exc: Exception) -> dict[str, object]:

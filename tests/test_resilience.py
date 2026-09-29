@@ -34,6 +34,7 @@ from custom_components.sp_group.const import (
     EVA_LATEST_SESSION_PATH,
     IDENTITY_HOST,
     JARVIS_ME_PATH,
+    JARVIS_PPMS_PATH,
     JARVIS_SMRD_PATH,
     LOGIN_RETRY_COOLDOWN_SECONDS,
     MAX_RESPONSE_BYTES,
@@ -655,3 +656,36 @@ def test_upstream_error_text_is_stripped_and_bounded() -> None:
         assert len(text) <= ERROR_VALUE_CHARS + 3
         assert "\x1b" not in text
         assert "‮" not in text
+
+
+def test_the_cooldown_is_one_account_however_it_is_typed() -> None:
+    """Two spellings of one address are one account, so one cooldown."""
+    with pytest.raises(AuthError):
+        SpGroupClient(transport=FixtureTransport(fail_login=True)).login(
+            "User@Example.com ", "a"
+        )
+    with pytest.raises(AuthError) as blocked:
+        SpGroupClient(transport=FixtureTransport()).login("user@example.com", "b")
+    assert blocked.value.error == "too_many_attempts"
+
+
+def test_an_optional_reads_error_message_is_cleaned(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The server's own message reaches the log; cap and clean it there too."""
+    hostile = "no scope \x1b[31m‮" + "x" * 500
+    transport = FixtureTransport(
+        responses={
+            JARVIS_PPMS_PATH: HttpResponse(
+                401, json.dumps({"error_description": hostile}).encode()
+            )
+        }
+    )
+    fixture_client(transport).fetch_usage()
+    logged = "\n".join(
+        str(record.msg) % record.args if record.args else str(record.msg)
+        for record in caplog.records
+    )
+    assert hostile not in logged
+    assert "\x1b" not in logged
+    assert "‮" not in logged

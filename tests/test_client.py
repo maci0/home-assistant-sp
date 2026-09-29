@@ -19,6 +19,7 @@ from custom_components.sp_group.client import (
     _mfa_channel_from_challenge,
     _oob_factor_authenticator_id,
     _parse_bills,
+    _parse_green_goals,
     _pick_mfa_factor,
     _ssl_context,
 )
@@ -46,9 +47,16 @@ from custom_components.sp_group.const import (
     NJORD_HISTORY_PATH,
     NJORD_PAYABLES_PATH,
     OAUTH_TOKEN_PATH,
+    UNIT_KWH,
     USER_AGENT,
 )
-from custom_components.sp_group.models import SG_TZ, MfaChallenge, PeriodReading
+from custom_components.sp_group.models import (
+    SG_TZ,
+    MfaChallenge,
+    PeriodReading,
+    PremiseInfo,
+    UsageReadings,
+)
 
 from .conftest import (
     FixedClock,
@@ -402,6 +410,20 @@ def test_challenge_mfa_rejects_non_prompt_binding_method() -> None:
     assert oob_code is None
 
 
+def test_challenge_mfa_accepts_the_prompt_binding_method_folded() -> None:
+    """The binding method is server text: its case and width are not its identity."""
+    transport = FixtureTransport(mfa_oob=True, mfa_challenge_binding="PROMPT")
+    client = SpGroupClient(transport=transport, clock=FixedClock())
+
+    with pytest.raises(AuthError) as raised:
+        client.login("user@example.com", "secret")
+    mfa_token = raised.value.mfa_token
+    assert mfa_token is not None
+
+    challenge = client.challenge_mfa(mfa_token, "sms|dev_abc123")
+    assert challenge.oob_code == "oob-code"
+
+
 def test_prepare_mfa_challenges_sms_and_returns_oob() -> None:
     transport = FixtureTransport(mfa_oob=True)
     client = SpGroupClient(transport=transport, clock=FixedClock())
@@ -604,6 +626,52 @@ def test_fetch_usage_returns_kwh_and_water_from_charts_fixture() -> None:
     assert usage.goal("water") is None
     assert any(
         urlparse_path(req.url) == JARVIS_GREEN_GOALS_PATH for req in transport.requests
+    )
+
+
+def test_a_goal_type_in_another_case_still_picks_its_own_unit() -> None:
+    """The goal type is server text, and the goal is looked up folded.
+
+    A type spelled "Elec" is the electricity goal, so it must not fall back to
+    the volume unit the way an unrecognized type does.
+    """
+    body = {
+        "goals": [
+            {
+                "type": "Elec",
+                "premises": [
+                    {
+                        "id": "premise-001",
+                        "data": {"used": 10.0, "target": 20.0},
+                    }
+                ],
+            }
+        ]
+    }
+    goals = _parse_green_goals(body, "premise-001")
+    assert len(goals) == 1
+    assert goals[0].kind == "Elec"
+    assert goals[0].unit == UNIT_KWH
+    assert (
+        UsageReadings(
+            premise=PremiseInfo(
+                id="premise-001",
+                address=None,
+                account_number=None,
+                account_status=None,
+                account_type=None,
+                premise_type=None,
+                utilities=(),
+                ami_elec=None,
+                retailer_name=None,
+                ppms_exists=False,
+            ),
+            electricity=None,
+            water=None,
+            gas=None,
+            green_goals=goals,
+        ).goal("elec")
+        is goals[0]
     )
 
 

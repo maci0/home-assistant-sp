@@ -327,9 +327,12 @@ def test_amount_due_unit_follows_the_payable_currency() -> None:
     assert _currency(None) == UNIT_SGD
     assert _currency("S$") == UNIT_SGD
     # A full-width code is the same code, and a trailing newline is not part
-    # of one: neither may reach Home Assistant as a unit of measurement.
+    # of one: neither reaches Home Assistant as a unit of measurement, and a
+    # code that only needs trimming keeps its own currency rather than falling
+    # back to SGD.
     assert _currency("ＵＳＤ") == "USD"
-    assert _currency("USD\n") == UNIT_SGD
+    assert _currency("USD\n") == "USD"
+    assert _currency("\n") == UNIT_SGD
 
 
 def test_fcu_key_folds_the_two_spellings_of_one_name() -> None:

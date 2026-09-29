@@ -67,6 +67,7 @@ from .const import (
     EVA_UNPAID_PATH,
     FROSTY_FCU_STATUS_PATH,
     FROSTY_GRAPHQL_PATH,
+    GOAL_KIND_ELECTRICITY,
     GREENUP_GRAPHQL_PATH,
     HEADER_ID_TOKEN,
     HTTP_TIMEOUT_SECONDS,
@@ -86,16 +87,19 @@ from .const import (
     NJORD_HISTORY_PATH,
     NJORD_PAYABLES_PATH,
     NOTIFICATIONS_PATH,
+    OAUTH_ERROR_MFA_REQUIRED,
     OAUTH_TOKEN_PATH,
     OPTIONAL_ABSENT_STATUSES,
     OPTIONAL_HTTP_TIMEOUT_SECONDS,
     PRICEPLAN_PATH,
     PUBLIC_HOST,
+    SCOPE_NOT_FOUND,
     TARIFF_DEFAULT_CONSUMPTION_KWH,
     TOKEN_EXPIRY_BUFFER_SECONDS,
     TRANSPORT_ERROR_CHARS,
     TYCHE_WALLET_PATH,
     UNIT_KWH,
+    UNIT_M3,
     USER_AGENT,
     fold_text,
 )
@@ -184,6 +188,15 @@ class AuthError(Exception):
         self.error_description = _clean_text(error_description)
         self.mfa_token = mfa_token
         super().__init__(self.error_description or self.error)
+
+    @property
+    def error_folded(self) -> str:
+        """``error`` in the comparison form, for matching a protocol code.
+
+        The code is server text, so it is matched folded: Auth0 spelling the
+        same code with a different case is still the code the branch wants.
+        """
+        return fold_text(self.error)
 
 
 class UsageError(Exception):
@@ -420,7 +433,8 @@ def _server_message(response: HttpResponse) -> str:
         or decoded.get("message")
         or ""
     )
-    return f": {_safe_text(message)}" if message else ""
+    text = _safe_text(message)
+    return f": {text}" if text else ""
 
 
 def _optional_json(response: HttpResponse, label: str) -> object | None:
@@ -459,9 +473,9 @@ def _eva_scope_denied(response: HttpResponse) -> bool:
         return False
     if not isinstance(body, dict):
         return False
-    error = str(body.get("error") or "")
-    description = str(body.get("error_description") or "")
-    return error == "scope_not_found" or "scope_not_found" in description
+    error = fold_text(str(body.get("error") or ""))
+    description = fold_text(str(body.get("error_description") or ""))
+    return error == SCOPE_NOT_FOUND or SCOPE_NOT_FOUND in description
 
 
 def _round_half_up(value: Decimal, exponent: str) -> float | None:
@@ -667,6 +681,11 @@ def _factor_usable(factor: dict[str, object]) -> bool:
     return bool(factor.get("id")) and factor.get("active") is not False
 
 
+def _factor_type(factor: dict[str, object]) -> str:
+    """An enrolled factor's type, in the comparison form."""
+    return fold_text(str(factor.get("authenticator_type") or ""))
+
+
 def _pick_mfa_factor(
     authenticators: tuple[dict[str, object], ...],
 ) -> dict[str, object] | None:
@@ -676,17 +695,18 @@ def _pick_mfa_factor(
     usable out-of-band factor (SMS, then email). A recovery-code factor is not
     a usable login factor and is ignored. Returns None when only recovery codes
     (or nothing) are enrolled. Factors with ``active: false`` are skipped.
+
+    The type and channel are server text, so both are matched folded rather
+    than by byte equality.
     """
     for factor in authenticators:
-        if factor.get("authenticator_type") in {"otp", "totp"} and _factor_usable(
-            factor
-        ):
+        if _factor_type(factor) in {"otp", "totp"} and _factor_usable(factor):
             return factor
     oob: dict[str, dict[str, object]] = {}
     for factor in authenticators:
-        if factor.get("authenticator_type") != "oob" or not _factor_usable(factor):
+        if _factor_type(factor) != "oob" or not _factor_usable(factor):
             continue
-        channel = factor.get("oob_channel")
+        channel = fold_text(str(factor.get("oob_channel") or ""))
         if channel in {"sms", "email"}:
             oob[channel] = factor
     sms = oob.get("sms")
@@ -703,7 +723,7 @@ def _oob_factor_authenticator_id(factor: dict[str, object] | None) -> str | None
     malformed factor. This is the gate that decides whether a challenge should
     be attempted at all.
     """
-    if factor is None or factor.get("authenticator_type") != "oob":
+    if factor is None or _factor_type(factor) != "oob":
         return None
     authenticator_id = factor.get("id")
     if not isinstance(authenticator_id, str) or not authenticator_id:
@@ -929,8 +949,14 @@ def _parse_green_goals(body: object, premise_id: str) -> tuple[GreenGoal, ...]:
             continue
         if used == 0.0 and target == 0.0:
             continue
-        unit = _optional_str(row.get("unit")) or ("kWh" if kind == "elec" else "m³")
-        if kind == "water":
+        # The goal's type is server text and the goal is looked up folded, so
+        # the unit default that hangs off the same type is decided folded too.
+        # "Elec" must not pick the volume default for an electricity goal.
+        folded_kind = fold_text(kind)
+        unit = _optional_str(row.get("unit")) or (
+            UNIT_KWH if folded_kind == GOAL_KIND_ELECTRICITY else UNIT_M3
+        )
+        if folded_kind == "water":
             unit = _energy_or_volume_unit(unit, "water")
         cost_cents = _optional_float(matched.get("cost_difference_in_cents"))
         goals.append(
@@ -1366,7 +1392,7 @@ class SpGroupClient:
             # A rejected credential starts a cooldown; a transport failure is the
             # host being down and throttling it would not help the user. An MFA
             # challenge is not a rejection at all: the password was right.
-            if exc.error != "mfa_required":
+            if exc.error_folded != OAUTH_ERROR_MFA_REQUIRED:
                 _note_login_failure(username, self._clock)
             raise
         _clear_login_failures(username)
@@ -1449,7 +1475,7 @@ class SpGroupClient:
         binding_method = mapping.get("binding_method")
         if not isinstance(oob_code, str) or not oob_code:
             raise AuthError("challenge_failed", "oob_code missing in challenge")
-        binding = str(binding_method).lower() if binding_method else "prompt"
+        binding = fold_text(str(binding_method)) if binding_method else "prompt"
         if binding != "prompt":
             # Only a "prompt" OOB challenge can be satisfied by a single code
             # entered in the form; anything else cannot, so fall back to TOTP

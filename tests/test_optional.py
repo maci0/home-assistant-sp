@@ -191,6 +191,21 @@ def test_a_denied_eva_scope_is_reported_at_warning(
     assert EVA_LATEST_SESSION_PATH in caplog.text
 
 
+def test_the_denied_scope_code_is_matched_folded() -> None:
+    """The code is server text, so its case and its width are not its identity."""
+    transport = FixtureTransport(
+        responses={
+            EVA_LATEST_SESSION_PATH: HttpResponse(403, b'{"error":"Scope_Not_Found"}')
+        }
+    )
+    usage = fixture_client(transport).fetch_usage()
+    assert usage.ev_session is None
+    eva_paths = [urlparse(req.url).path for req in transport.requests]
+    assert [path for path in eva_paths if path.startswith("/eva/")] == [
+        EVA_LATEST_SESSION_PATH
+    ]
+
+
 def test_optional_calls_use_short_timeout() -> None:
     transport = FixtureTransport()
     fixture_client(transport).fetch_usage()
