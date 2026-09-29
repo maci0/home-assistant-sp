@@ -41,11 +41,11 @@ STEP_USER_DATA_SCHEMA = vol.Schema(dict(_CREDENTIALS))
 _LOGGER = logging.getLogger(__name__)
 
 
-def _entry_data(client: SpGroupClient, username: str, password: str) -> dict[str, str]:
+def _entry_data(client: SpGroupClient, username: str) -> dict[str, str]:
     session = client.session
     if session is None:
         raise UsageError("session missing after login")
-    return session_entry_data(session, username, password)
+    return session_entry_data(session, username)
 
 
 async def _validate(
@@ -65,7 +65,7 @@ async def _validate(
         client.fetch_usage()
 
     await hass.async_add_executor_job(_login_and_fetch)
-    return _entry_data(client, username, password)
+    return _entry_data(client, username)
 
 
 def _auth_error_key(exc: AuthError) -> str:

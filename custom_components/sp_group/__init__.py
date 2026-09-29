@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .const import translated_error
+from .const import CONF_PASSWORD, translated_error
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -37,6 +37,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> b
         OAUTH_ERROR_REQUIRES_VERIFICATION,
     )
     from .coordinator import SpGroupCoordinator
+
+    _forget_password(hass, entry)
 
     access = entry.data.get(CONF_ACCESS_TOKEN)
     ident = entry.data.get(CONF_ID_TOKEN)
@@ -79,3 +81,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> 
 async def _async_entry_updated(hass: HomeAssistant, entry: SpGroupConfigEntry) -> None:
     """Options changed (the coordinator also updates data to persist tokens)."""
     await entry.runtime_data.async_options_updated()
+
+
+def _forget_password(hass: HomeAssistant, entry: SpGroupConfigEntry) -> None:
+    """Drop a password an earlier version kept on the entry.
+
+    Only the token exchange needs the password, and the tokens it returns
+    outlive it, so an entry written before it stopped being stored still
+    carries the e-account password in ``.storage``. Nothing reads it back:
+    reauth and reconfigure ask for it in the form. It runs from
+    ``async_setup_entry`` before the update listener is registered, so the
+    rewrite reloads nothing.
+    """
+    if CONF_PASSWORD not in entry.data:
+        return
+    kept = {key: value for key, value in entry.data.items() if key != CONF_PASSWORD}
+    hass.config_entries.async_update_entry(entry, data=kept)

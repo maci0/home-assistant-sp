@@ -7,7 +7,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_REFRESH_TOKEN
+from .const import CONF_PASSWORD, CONF_REFRESH_TOKEN
 from .coordinator import SpGroupCoordinator
 
 
@@ -17,7 +17,9 @@ async def async_get_config_entry_diagnostics(
     coordinator: SpGroupCoordinator = entry.runtime_data
     usage = coordinator.data
     # The reason the last poll failed, if it did: without it a download taken
-    # while the entities are unavailable says nothing about why.
+    # while the entities are unavailable says nothing about why. A download is
+    # something users paste into a public issue, so the premise is reported as
+    # the same presence flags the address and the account number get.
     last_error: dict[str, str | None] = {"last_error": coordinator.last_error}
     if usage is None:
         return {
@@ -27,8 +29,9 @@ async def async_get_config_entry_diagnostics(
         }
     return {
         "has_refresh_token": bool(entry.data.get(CONF_REFRESH_TOKEN)),
+        "has_stored_password": CONF_PASSWORD in entry.data,
         **last_error,
-        "premise_id": usage.premise_id,
+        "has_premise_id": bool(usage.premise_id),
         "has_address": bool(usage.premise.address),
         "has_account_number": bool(usage.premise.account_number),
         "account_status": usage.premise.account_status,

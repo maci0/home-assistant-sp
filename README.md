@@ -138,7 +138,11 @@ Then optional reads (8s HTTP timeout each). 4xx or empty payloads skip the match
 Every response body is read under an 8 MB cap; a larger one fails the read instead of
 growing the process.
 
-The refresh token is stored on the config entry so restarts do not password-login every time. Diagnostics omit the password and tokens.
+The config entry keeps the account name and the session tokens, so restarts do not
+password-login every time. It does not keep the password: the password buys one token
+exchange, the refresh token buys every one after it, and reauth and reconfigure ask for
+it again. An entry written by a version that stored it has it removed on load.
+Diagnostics report the premise as presence flags and omit every token.
 
 A rejected password blocks the next sign-in for the same account for 60 seconds, so a
 mistyped password or a reauth loop cannot trip Auth0 bot detection. An MFA challenge does

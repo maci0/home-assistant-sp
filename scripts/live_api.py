@@ -42,7 +42,9 @@ def main() -> int:
         session = client.login(username, password)
         print(f"login=ok access_token_len={len(session.access_token)}")
         usage = client.fetch_usage()
-        print(f"premise_id={usage.premise_id}")
+        # The premise id is the account number. It identifies the household, and
+        # this output is what gets pasted into a bug report.
+        print(f"has_premise_id={bool(usage.premise_id)}")
         print(f"electricity_kwh={usage.electricity_kwh}")
         print(f"water_m3={usage.water_m3}")
         return 0

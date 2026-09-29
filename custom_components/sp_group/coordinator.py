@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import TypeVar
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -147,10 +147,12 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             )
             raise self._update_error(exc) from exc
         self.last_error = None
+        # The premise id is the account number, so it stays out of the log the
+        # way the client keeps it out of the URLs it logs. The entry title
+        # names the poll.
         _LOGGER.debug(
-            "poll for %s fetched premise %s in %d ms",
+            "poll for %s fetched usage in %d ms",
             self.entry.title,
-            usage.premise_id,
             round((time.monotonic() - started) * 1000),
         )
         self._persist_session_if_changed()
@@ -192,7 +194,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             and stored_refresh == refresh
         ):
             return
-        payload = session_entry_data(session, data[CONF_USERNAME], data[CONF_PASSWORD])
+        payload = session_entry_data(session, data[CONF_USERNAME])
         self.hass.config_entries.async_update_entry(self.entry, data=payload)
 
     def _schedule_stats_import(self) -> None:
@@ -217,7 +219,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 await self._async_import_billed_history(usage)
             except Exception:
                 _LOGGER.exception(
-                    "failed to import billed statistics for %s", usage.premise_id
+                    "failed to import billed statistics for %s", self.entry.title
                 )
 
     def _imported_through(self, premise_id: str) -> dict[str, datetime]:

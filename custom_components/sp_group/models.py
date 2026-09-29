@@ -98,7 +98,6 @@ class BillInfo:
     date: str | None
     period: str | None
     due_date: str | None
-    account_number: str | None
     issued_at: datetime | None = None
 
 

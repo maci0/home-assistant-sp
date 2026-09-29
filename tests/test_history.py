@@ -120,7 +120,6 @@ def test_monthly_bill_points_skip_undated_and_keep_the_latest_of_a_month() -> No
                 date=None,
                 period=None,
                 due_date=None,
-                account_number="1",
                 issued_at=None,
             ),
             BillInfo(
@@ -128,7 +127,6 @@ def test_monthly_bill_points_skip_undated_and_keep_the_latest_of_a_month() -> No
                 date=None,
                 period=None,
                 due_date=None,
-                account_number="1",
                 issued_at=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
             ),
             BillInfo(
@@ -136,7 +134,6 @@ def test_monthly_bill_points_skip_undated_and_keep_the_latest_of_a_month() -> No
                 date=None,
                 period=None,
                 due_date=None,
-                account_number="1",
                 issued_at=datetime(2026, 6, 20, 0, 0, tzinfo=UTC),
             ),
         )

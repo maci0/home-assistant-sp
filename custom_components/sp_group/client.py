@@ -57,7 +57,6 @@ from .const import (
     BILL_PREFERENCES_PATH,
     CONF_ACCESS_TOKEN,
     CONF_ID_TOKEN,
-    CONF_PASSWORD,
     CONF_REFRESH_TOKEN,
     CONF_USERNAME,
     CONTENT_TYPE_JSON,
@@ -633,13 +632,17 @@ def _session_from_oauth(
     )
 
 
-def session_entry_data(
-    session: Session, username: str, password: str
-) -> dict[str, str]:
-    """The config entry data for a session: credentials plus its tokens."""
+def session_entry_data(session: Session, username: str) -> dict[str, str]:
+    """The config entry data for a session: the account name plus its tokens.
+
+    The password is not among them. It buys one session and the refresh token
+    buys every session after it, so keeping the password would leave the
+    e-account password in ``.storage`` for the life of the entry, readable by
+    anything that can read the config entry and copied into every backup. A
+    reauth or a reconfigure asks for it again instead.
+    """
     data = {
         CONF_USERNAME: username,
-        CONF_PASSWORD: password,
         CONF_ACCESS_TOKEN: session.access_token,
         CONF_ID_TOKEN: session.id_token,
     }
@@ -1192,7 +1195,6 @@ def _parse_bills(body: object) -> tuple[BillInfo, ...]:
             date=date,
             period=period,
             due_date=_optional_str(bill.get("due_date")),
-            account_number=_optional_str(bill.get("account_number")),
             issued_at=issued_at,
         )
         # Order by the instant, never by the timestamp text: Njord returns
