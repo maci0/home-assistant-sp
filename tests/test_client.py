@@ -20,6 +20,7 @@ from custom_components.sp_group.client import (
     _mfa_channel_from_challenge,
     _oob_factor_authenticator_id,
     _pick_mfa_factor,
+    _ssl_context,
 )
 from custom_components.sp_group.const import (
     AUTH0_AUDIENCE,
@@ -807,3 +808,7 @@ def test_drop_future_removes_padded_days() -> None:
     kept = _drop_future(periods, now)
 
     assert [item.start.day for item in kept] == [20, 21]
+
+
+def test_tls_context_is_built_once_per_process() -> None:
+    assert _ssl_context() is _ssl_context()

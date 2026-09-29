@@ -43,6 +43,7 @@ Polls every 30 minutes. After the first successful poll, long-term statistics ar
 - Do not add **Electricity last billed**, **Electricity meter**, or **Electricity this month** as grid sources. They are a different number: last billed period, the physical register, and Green Goals month-to-date.
 - Leave Water empty in Energy. SP bills water monthly. **Water** is the sum of billed months; **Water meter** is the lifetime register. Neither is an hourly series.
 - Gas: **SP Group gas** (`sp_group:{premise_id}_gas`) only if Jarvis returned billed gas periods.
+- Each poll writes only the points the recorder does not have yet, so a restart or a re-auth does not re-send the loaded window. A value SP later restates for an already imported point is not rewritten.
 
 AMI electricity lags a few hours. Empty future 30-minute slots are dropped. **Electricity last 30 min** is the last published slot, not the clock hour.
 

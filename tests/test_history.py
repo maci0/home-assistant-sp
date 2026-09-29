@@ -16,6 +16,7 @@ from custom_components.sp_group.history import (
     merge_ami_periods,
     monthly_bill_points,
     trim_unreported,
+    unimported,
 )
 from custom_components.sp_group.mapper import electricity_graph_periods
 from custom_components.sp_group.models import SG_TZ, BillInfo, PeriodReading
@@ -212,3 +213,42 @@ def test_cost_points_scale_cumulative_kwh() -> None:
     assert [c.start for c in cost] == [p.start for p in points]
     assert cost[0].cumulative == pytest.approx(2.9428, abs=1e-4)
     assert cost[1].cumulative == pytest.approx(2.9839, abs=1e-4)
+
+
+def test_unimported_sends_everything_on_the_first_import() -> None:
+    points = [
+        CumulativePoint(start=datetime(2026, 9, 21, 0, tzinfo=UTC), cumulative=1.0),
+        CumulativePoint(start=datetime(2026, 9, 21, 1, tzinfo=UTC), cumulative=2.0),
+    ]
+
+    assert unimported(points, None) == points
+
+
+def test_unimported_drops_only_the_points_already_written() -> None:
+    written = datetime(2026, 9, 21, 0, tzinfo=UTC)
+    points = [
+        CumulativePoint(start=written, cumulative=1.0),
+        CumulativePoint(start=datetime(2026, 9, 21, 1, tzinfo=UTC), cumulative=2.0),
+        CumulativePoint(start=datetime(2026, 9, 21, 2, tzinfo=UTC), cumulative=3.0),
+    ]
+
+    fresh = unimported(points, written)
+
+    assert [point.start for point in fresh] == [point.start for point in points[1:]]
+
+
+def test_unimported_is_empty_when_the_series_did_not_move() -> None:
+    points = [
+        CumulativePoint(start=datetime(2026, 9, 21, 0, tzinfo=UTC), cumulative=1.0),
+        CumulativePoint(start=datetime(2026, 9, 21, 1, tzinfo=UTC), cumulative=2.0),
+    ]
+
+    assert unimported(points, points[-1].start) == []
+
+
+def test_unimported_works_for_bill_periods() -> None:
+    month = datetime(2026, 9, 1, tzinfo=UTC)
+    bills = [PeriodReading(start=month, amount=42.0)]
+
+    assert unimported(bills, month) == []
+    assert unimported(bills, None) == bills

@@ -23,6 +23,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from functools import cache
 from http.client import HTTPException
 from typing import Protocol, TypeGuard
 from urllib.error import HTTPError
@@ -168,6 +169,17 @@ class Transport(Protocol):
     ) -> HttpResponse: ...
 
 
+@cache
+def _ssl_context() -> ssl.SSLContext:
+    """The verified-certificate context, built once per process.
+
+    Building one re-reads and re-parses the CA bundle from disk, and a poll
+    makes a dozen requests. An SSLContext is immutable once created and safe to
+    share between the requests, so there is nothing to release per call.
+    """
+    return ssl.create_default_context()
+
+
 class UrllibTransport:
     def request(
         self,
@@ -179,10 +191,9 @@ class UrllibTransport:
         timeout: int | None = None,
     ) -> HttpResponse:
         request = Request(url, data=body, method=method, headers=dict(headers))
-        context = ssl.create_default_context()
         seconds = HTTP_TIMEOUT_SECONDS if timeout is None else timeout
         try:
-            with urlopen(request, timeout=seconds, context=context) as response:
+            with urlopen(request, timeout=seconds, context=_ssl_context()) as response:
                 return HttpResponse(status=int(response.status), body=response.read())
         except HTTPError as exc:
             with exc:

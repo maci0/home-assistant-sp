@@ -6,11 +6,36 @@ are folded to clock hours, and bills collapse to one point per calendar month.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol
 
 from .const import DOMAIN
 from .models import SG_TZ, BillInfo, PeriodReading
+
+
+class HasStart(Protocol):
+    """Anything a statistic row is timestamped by."""
+
+    @property
+    def start(self) -> datetime: ...
+
+
+def unimported[Started: HasStart](
+    points: Sequence[Started], imported_through: datetime | None
+) -> list[Started]:
+    """The points the recorder does not have yet.
+
+    A re-import runs on every poll and re-sends the whole series. The recorder
+    keys a row by (statistic id, start), so re-sending an old point rewrites a
+    row that already holds the same value, forever. Sending only the points
+    after the last imported start bounds what one series adds to long-term
+    statistics to the readings that are actually new.
+    """
+    if imported_through is None:
+        return list(points)
+    return [point for point in points if point.start > imported_through]
 
 
 def cost_points(

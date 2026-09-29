@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable, Sequence
 from contextlib import suppress
+from datetime import datetime
+from typing import TypeVar
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
@@ -32,15 +35,19 @@ from .const import (
     translated_error,
 )
 from .history import (
+    HasStart,
     cost_points,
     cumulative_points,
     external_statistic_id,
     monthly_bill_points,
+    unimported,
 )
 from .mapper import SensorSpec, SensorSpecCache, electricity_graph_periods
 from .models import UsageReadings
 
 _LOGGER = logging.getLogger(__name__)
+
+_PointT = TypeVar("_PointT", bound=HasStart)
 
 
 class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
@@ -59,6 +66,8 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         self._stats_task: asyncio.Task[None] | None = None
         self._stats_stopped = False
         self._imported_price: float | None = None
+        self._imported_premise: str | None = None
+        self._imported_points: dict[str, datetime] = {}
         self._spec_cache = SensorSpecCache()
 
     @property
@@ -151,12 +160,44 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             except Exception:
                 _LOGGER.exception("failed to import billed statistics")
 
+    def _imported_through(self, premise_id: str) -> dict[str, datetime]:
+        """The newest start already written per statistic id for this premise.
+
+        Dropped when the premise changes so a re-auth against another account
+        cannot leave the previous one's keys behind.
+        """
+        if self._imported_premise != premise_id:
+            self._imported_premise = premise_id
+            self._imported_points = {}
+        return self._imported_points
+
+    def _add_external_statistics(
+        self,
+        premise_id: str,
+        statistic_id: str,
+        metadata: dict[str, object],
+        points: Sequence[_PointT],
+        value: Callable[[_PointT], float],
+    ) -> None:
+        """Write the points the recorder has not seen yet, then remember the last."""
+        from homeassistant.components.recorder.statistics import (
+            async_add_external_statistics,
+        )
+
+        imported = self._imported_through(premise_id)
+        fresh = unimported(points, imported.get(statistic_id))
+        if not fresh:
+            return
+        stats = [
+            {"start": point.start, "state": value(point), "sum": value(point)}
+            for point in fresh
+        ]
+        async_add_external_statistics(self.hass, metadata, stats)
+        imported[statistic_id] = fresh[-1].start
+
     async def _async_import_billed_history(self, usage: UsageReadings) -> None:
         from homeassistant.components.recorder.models.statistics import (
             StatisticMeanType,
-        )
-        from homeassistant.components.recorder.statistics import (
-            async_add_external_statistics,
         )
 
         series: list[tuple[str, tuple, str, str]] = []
@@ -194,15 +235,13 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 "unit_class": unit_class,
                 "unit_of_measurement": unit,
             }
-            stats = [
-                {
-                    "start": point.start,
-                    "state": point.cumulative,
-                    "sum": point.cumulative,
-                }
-                for point in points
-            ]
-            async_add_external_statistics(self.hass, metadata, stats)
+            self._add_external_statistics(
+                usage.premise_id,
+                external_statistic_id(usage.premise_id, key),
+                metadata,
+                points,
+                lambda point: point.cumulative,
+            )
             if key == SENSOR_KEY_ELECTRICITY and price is not None:
                 cost_metadata = {
                     "has_sum": True,
@@ -215,18 +254,15 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                     "unit_class": None,
                     "unit_of_measurement": UNIT_SGD,
                 }
-                cost_stats = [
-                    {
-                        "start": point.start,
-                        "state": point.cumulative,
-                        "sum": point.cumulative,
-                    }
-                    for point in cost_points(points, price)
-                ]
-                async_add_external_statistics(self.hass, cost_metadata, cost_stats)
-        # One write per import: the per-series position skipped accounts with no
-        # billable electricity, so every options update re-imported for them.
-        self._imported_price = price
+                self._add_external_statistics(
+                    usage.premise_id,
+                    external_statistic_id(
+                        usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
+                    ),
+                    cost_metadata,
+                    cost_points(points, price),
+                    lambda point: point.cumulative,
+                )
         bill_points = monthly_bill_points(usage.bills)
         if bill_points:
             metadata = {
@@ -240,12 +276,11 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 "unit_class": None,
                 "unit_of_measurement": UNIT_SGD,
             }
-            stats = [
-                {
-                    "start": point.start,
-                    "state": point.amount,
-                    "sum": point.amount,
-                }
-                for point in bill_points
-            ]
-            async_add_external_statistics(self.hass, metadata, stats)
+            self._add_external_statistics(
+                usage.premise_id,
+                external_statistic_id(usage.premise_id, SENSOR_KEY_LAST_BILL),
+                metadata,
+                bill_points,
+                lambda point: point.amount,
+            )
+        self._imported_price = self.electricity_price
