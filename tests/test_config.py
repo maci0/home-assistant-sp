@@ -8,6 +8,7 @@ from custom_components.sp_group.const import (
     MAX_USERNAME_OCTETS,
     fold_text,
     parse_electricity_price,
+    parse_electricity_price_input,
     validate_username,
 )
 
@@ -70,3 +71,27 @@ def test_fold_collapses_the_spellings_of_one_name() -> None:
         "\N{LATIN SMALL LETTER E WITH ACUTE}"
     )
     assert fold_text(" User@Example.com ") == "user@example.com"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # A cleared options field is how the cost series is turned off, so the
+        # form has to read it as a value rather than as a failed parse.
+        ("", None),
+        ("   ", None),
+        ("0.29", 0.29),
+        ("  0.29  ", 0.29),
+        ("0", None),
+        (0.29, 0.29),
+        (None, None),
+    ],
+)
+def test_price_or_unset_from_the_form(raw: object, expected: float | None) -> None:
+    assert parse_electricity_price_input(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["free", "0.2SGD", float("nan"), "-0.29", -1])
+def test_unusable_form_price_is_reported(raw: object) -> None:
+    with pytest.raises(ValueError, match="electricity_price"):
+        parse_electricity_price_input(raw)

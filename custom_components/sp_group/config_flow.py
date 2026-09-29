@@ -21,7 +21,7 @@ from .const import (
     OAUTH_ERROR_MFA_REQUIRED,
     OAUTH_ERROR_REQUIRES_VERIFICATION,
     fold_text,
-    parse_electricity_price,
+    parse_electricity_price_input,
     validate_username,
 )
 
@@ -40,6 +40,19 @@ _CREDENTIALS = {
 STEP_USER_DATA_SCHEMA = vol.Schema(dict(_CREDENTIALS))
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _price_input(raw: object) -> float | None:
+    """voluptuous validator for the options price field.
+
+    Raises Invalid so a typo comes back as a form error on the field, and
+    returns None for a cleared field, which is how the operator turns the cost
+    series off. The rule itself is the one in const, shared with the reader.
+    """
+    try:
+        return parse_electricity_price_input(raw)
+    except ValueError as exc:
+        raise vol.Invalid(str(exc)) from exc
 
 
 def _entry_data(client: SpGroupClient, username: str) -> dict[str, str]:
@@ -122,12 +135,17 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
-            price = parse_electricity_price(user_input.get(CONF_ELECTRICITY_PRICE))
+            # The schema already ran every submitted value through the rule, so
+            # None here is a cleared field and not an unset one.
+            price = user_input.get(CONF_ELECTRICITY_PRICE)
             if price is not None:
                 options = {**self.config_entry.options, CONF_ELECTRICITY_PRICE: price}
             else:
-                options = dict(self.config_entry.options)
-                options.pop(CONF_ELECTRICITY_PRICE, None)
+                options = {
+                    key: value
+                    for key, value in self.config_entry.options.items()
+                    if key != CONF_ELECTRICITY_PRICE
+                }
             return self.async_create_entry(title="", data=options)
         current = self.config_entry.options.get(CONF_ELECTRICITY_PRICE)
         schema = vol.Schema(

@@ -293,6 +293,27 @@ def validate_username(raw: str) -> str:
     return raw
 
 
+def parse_electricity_price_input(raw: object) -> float | None:
+    """What the options form submits, or None when the field was left empty.
+
+    The form is the only way an operator clears the option, and a cleared text
+    field submits an empty string, which is not a number. Whitespace is the
+    same answer as an empty field, so a form that only looks cleared disables
+    the cost series instead of failing on a value the operator can neither see
+    nor fix. Zero keeps the stored rule and clears the option, as the options
+    description says it does; a negative is a typo on a field the operator is
+    looking at, so it is reported instead of read as a clear.
+    """
+    if isinstance(raw, str):
+        raw = raw.strip()
+    if raw is None or raw == "":
+        return None
+    price = parse_electricity_price(raw)
+    if price is None and float(raw) < 0:  # type: ignore[arg-type]
+        raise ValueError(f"{CONF_ELECTRICITY_PRICE} must not be negative, got {raw!r}")
+    return price
+
+
 def fold_text(value: str) -> str:
     """The one comparison form for text that came from outside this source.
 
