@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -18,7 +18,7 @@ from custom_components.sp_group.history import (
     trim_unreported,
 )
 from custom_components.sp_group.mapper import electricity_graph_periods
-from custom_components.sp_group.models import SG_TZ, PeriodReading
+from custom_components.sp_group.models import SG_TZ, BillInfo, PeriodReading
 
 from .conftest import billed_totals_from_charts_payload, fixture_client, load_fixture
 
@@ -49,6 +49,24 @@ def test_same_hour_periods_collapse() -> None:
     assert points[0].start.minute == 0
 
 
+def test_cumulative_points_sort_unordered_periods() -> None:
+    """The AMI feed is not ordered; a late row must not become a lower sum."""
+    later = datetime(2026, 6, 1, 2, 0, tzinfo=UTC)
+    earlier = later - timedelta(hours=1)
+
+    points = cumulative_points(
+        (
+            PeriodReading(start=later, amount=2.0),
+            PeriodReading(start=earlier, amount=1.0),
+        )
+    )
+
+    assert [(point.start, point.cumulative) for point in points] == [
+        (earlier, 1.0),
+        (later, 3.0),
+    ]
+
+
 def test_trim_unreported_drops_trailing_zeros() -> None:
     start = datetime(2026, 8, 28, 15, 0, tzinfo=SG_TZ)
     trimmed = trim_unreported(
@@ -63,6 +81,21 @@ def test_trim_unreported_drops_trailing_zeros() -> None:
     assert trimmed[-1].amount == pytest.approx(0.7)
 
 
+def test_trim_unreported_drops_everything_when_nothing_is_reported() -> None:
+    """A brand new account has an all-zero AMI window, not a zero-length one."""
+    start = datetime(2026, 8, 28, 15, 0, tzinfo=SG_TZ)
+
+    assert (
+        trim_unreported(
+            (
+                PeriodReading(start=start, amount=0.0),
+                PeriodReading(start=start.replace(minute=30), amount=0.0),
+            )
+        )
+        == ()
+    )
+
+
 def test_monthly_bill_points_one_per_month() -> None:
     client = fixture_client()
     usage = client.fetch_usage()
@@ -75,6 +108,43 @@ def test_monthly_bill_points_one_per_month() -> None:
     assert points[0].start.minute == 0
     assert points[0].start.month == 6
     assert points[1].start.month == 7
+
+
+def test_monthly_bill_points_skip_undated_and_keep_the_latest_of_a_month() -> None:
+    """A bill with no parseable date has no month, and a re-issued bill replaces."""
+    points = monthly_bill_points(
+        (
+            BillInfo(
+                amount_sgd=10.0,
+                date=None,
+                period=None,
+                due_date=None,
+                account_number="1",
+                issued_at=None,
+            ),
+            BillInfo(
+                amount_sgd=1.0,
+                date=None,
+                period=None,
+                due_date=None,
+                account_number="1",
+                issued_at=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+            ),
+            BillInfo(
+                amount_sgd=2.0,
+                date=None,
+                period=None,
+                due_date=None,
+                account_number="1",
+                issued_at=datetime(2026, 6, 20, 0, 0, tzinfo=UTC),
+            ),
+        )
+    )
+
+    # The month is anchored in SGT, so it lands at 16:00Z on the previous day.
+    assert [(point.start, point.amount) for point in points] == [
+        (datetime(2026, 5, 31, 16, 0, tzinfo=UTC), 2.0)
+    ]
 
 
 def test_fold_half_hours_sums_clock_hour() -> None:
@@ -92,14 +162,24 @@ def test_fold_half_hours_sums_clock_hour() -> None:
 
 def test_merge_prefers_hourly_on_same_day() -> None:
     day = datetime(2026, 8, 2, 0, 0, tzinfo=SG_TZ)
-    daily = (PeriodReading(start=day, amount=99.0),)
+    day_before = day - timedelta(days=1)
+    daily = (
+        PeriodReading(start=day_before, amount=99.0),
+        PeriodReading(start=day, amount=88.0),
+    )
     hourly = (
         PeriodReading(start=day, amount=1.0),
         PeriodReading(start=day.replace(hour=1), amount=2.0),
     )
+
     merged = merge_ami_periods(daily, hourly)
-    assert len(merged) == 2
-    assert all(item.amount != 99.0 for item in merged)
+
+    # The hourly day wins; the day with no hourly data keeps its daily total.
+    assert [(item.start, item.amount) for item in merged] == [
+        (day_before, 99.0),
+        (day, 1.0),
+        (day.replace(hour=1), 2.0),
+    ]
 
 
 def test_electricity_graph_uses_ami_not_billed() -> None:

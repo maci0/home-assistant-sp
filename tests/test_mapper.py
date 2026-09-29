@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -14,16 +15,23 @@ from custom_components.sp_group.const import (
     ENTITY_CATEGORY_DIAGNOSTIC,
     SENSOR_KEY_ACCOUNT,
     SENSOR_KEY_AMOUNT_DUE,
+    SENSOR_KEY_BILL_DELIVERY,
     SENSOR_KEY_ELECTRICITY,
     SENSOR_KEY_ELECTRICITY_GOAL,
     SENSOR_KEY_ELECTRICITY_LAST,
     SENSOR_KEY_ELECTRICITY_METER,
+    SENSOR_KEY_EV_UNPAID,
     SENSOR_KEY_GAS,
     SENSOR_KEY_LAST_BILL,
+    SENSOR_KEY_PPMS,
     SENSOR_KEY_WATER,
     SENSOR_KEY_WATER_GOAL,
     SENSOR_KEY_WATER_LAST,
     SENSOR_KEY_WATER_METER,
+    SENSOR_STATE_EBILL,
+    SENSOR_STATE_OFF,
+    SENSOR_STATE_ON,
+    SENSOR_STATE_PAPER,
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL,
     STATE_CLASS_TOTAL_INCREASING,
@@ -36,6 +44,12 @@ from custom_components.sp_group.mapper import (
     extra_attributes,
     sensors_from_usage,
 )
+from custom_components.sp_group.models import (
+    BillDeliveryInfo,
+    EvUnpaidInfo,
+    FcuInfo,
+    UsageReadings,
+)
 
 from .conftest import (
     FixtureTransport,
@@ -43,6 +57,11 @@ from .conftest import (
     fixture_client,
     load_fixture,
 )
+
+
+def _usage_with(**overrides: object) -> UsageReadings:
+    """A real fixture poll with the named fields swapped, for optional branches."""
+    return replace(fixture_client().fetch_usage(), **overrides)
 
 
 def test_sensors_match_energy_dashboard_contract() -> None:
@@ -115,6 +134,132 @@ def test_sensors_match_energy_dashboard_contract() -> None:
     assert goal_attrs["goal_target"] == pytest.approx(672.47)
     assert goal_attrs["cost_difference_sgd"] == pytest.approx(103.10)
     assert SENSOR_KEY_WATER_GOAL not in by_key
+
+
+@pytest.mark.parametrize(
+    ("soft_copy", "hard_copy", "expected"),
+    [
+        pytest.param(True, False, SENSOR_STATE_EBILL, id="soft-only"),
+        pytest.param(True, True, SENSOR_STATE_EBILL, id="soft-and-hard"),
+        pytest.param(False, True, SENSOR_STATE_PAPER, id="hard-only"),
+        pytest.param(None, True, SENSOR_STATE_PAPER, id="unknown-soft-hard-copies"),
+        pytest.param(None, None, SENSOR_STATE_PAPER, id="both-unknown"),
+    ],
+)
+def test_bill_delivery_state_follows_the_copy_preference(
+    soft_copy: bool | None, hard_copy: bool | None, expected: str
+) -> None:
+    """The state is one of the shipped translated values, never a raw bool."""
+    usage = _usage_with(
+        bill_delivery=BillDeliveryInfo(soft_copy=soft_copy, hard_copy=hard_copy)
+    )
+
+    spec = {item.key: item for item in sensors_from_usage(usage)}[
+        SENSOR_KEY_BILL_DELIVERY
+    ]
+
+    assert spec.native_value == expected
+    assert spec.native_value in {SENSOR_STATE_EBILL, SENSOR_STATE_PAPER}
+
+
+def test_amount_due_carries_the_payable_currency() -> None:
+    """A USD payable is labelled USD on the entity, not hard-coded SGD."""
+    usage = _usage_with()
+    due = replace(usage.amount_due, currency="usd")
+    usage = replace(usage, amount_due=due)
+
+    spec = {item.key: item for item in sensors_from_usage(usage)}[SENSOR_KEY_AMOUNT_DUE]
+
+    assert spec.native_value == pytest.approx(203.69)
+    assert spec.unit_of_measurement == "USD"
+    assert extra_attributes(usage, SENSOR_KEY_AMOUNT_DUE)["currency"] == "usd"
+
+
+@pytest.mark.parametrize(
+    ("unpaid", "expected_value", "expected_unit"),
+    [
+        pytest.param(
+            EvUnpaidInfo(count=2, amount=18.5), 18.5, UNIT_SGD, id="with-amount"
+        ),
+        pytest.param(EvUnpaidInfo(count=2, amount=None), 2, None, id="count-only"),
+    ],
+)
+def test_ev_unpaid_falls_back_to_the_order_count(
+    unpaid: EvUnpaidInfo, expected_value: float, expected_unit: str | None
+) -> None:
+    usage = _usage_with(ev_unpaid=unpaid)
+
+    spec = {item.key: item for item in sensors_from_usage(usage)}[SENSOR_KEY_EV_UNPAID]
+
+    assert spec.native_value == expected_value
+    assert spec.unit_of_measurement == expected_unit
+    assert (spec.device_class == DEVICE_CLASS_MONETARY) is (expected_unit == UNIT_SGD)
+    assert extra_attributes(usage, SENSOR_KEY_EV_UNPAID)["order_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("is_on", "expected_state"),
+    [(True, SENSOR_STATE_ON), (False, SENSOR_STATE_OFF)],
+)
+def test_fcu_without_a_temperature_reports_on_and_off(
+    is_on: bool, expected_state: str
+) -> None:
+    usage = _usage_with(
+        fcus=(
+            FcuInfo(
+                thing_name="Tengah Living 1!",
+                display_name="Living",
+                is_on=is_on,
+                is_online=True,
+                room_temperature=None,
+                setpoint=25,
+                mode="cool",
+            ),
+        )
+    )
+
+    specs = {item.key: item for item in sensors_from_usage(usage)}
+
+    assert "fcu_tengah_living_1" in specs
+    spec = specs["fcu_tengah_living_1"]
+    assert spec.native_value == expected_state
+    assert spec.device_class is None
+    assert spec.state_class is None
+    assert spec.unit_of_measurement is None
+    attrs = extra_attributes(usage, "fcu_tengah_living_1")
+    assert attrs["thing_name"] == "Tengah Living 1!"
+    assert attrs["is_on"] is is_on
+    assert attrs["setpoint"] == 25
+
+
+def test_last_period_sensor_is_empty_when_the_utility_has_no_periods() -> None:
+    usage = _usage_with()
+    assert usage.electricity is not None
+    usage = replace(
+        usage,
+        electricity=replace(usage.electricity, periods=()),
+    )
+
+    specs = {item.key: item for item in sensors_from_usage(usage)}
+
+    assert specs[SENSOR_KEY_ELECTRICITY_LAST].native_value is None
+    assert specs[SENSOR_KEY_ELECTRICITY_LAST].state_class == STATE_CLASS_MEASUREMENT
+    assert SENSOR_KEY_ELECTRICITY in specs
+
+
+def test_ppms_credit_sensor_appears_only_when_enrolled() -> None:
+    usage = _usage_with(ppms_credit=42.5, ppms_updated_at="2026-09-01T00:00:00Z")
+    assert SENSOR_KEY_PPMS not in {
+        item.key for item in sensors_from_usage(_usage_with())
+    }
+
+    spec = {item.key: item for item in sensors_from_usage(usage)}[SENSOR_KEY_PPMS]
+
+    assert spec.native_value == pytest.approx(42.5)
+    assert spec.device_class == DEVICE_CLASS_MONETARY
+    assert spec.unit_of_measurement == UNIT_SGD
+    assert spec.entity_category == ENTITY_CATEGORY_DIAGNOSTIC
+    assert spec.state_class is None
 
 
 def test_gas_only_charts_yield_gas_sensors() -> None:

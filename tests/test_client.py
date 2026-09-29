@@ -15,6 +15,7 @@ from custom_components.sp_group.client import (
     MfaChallenge,
     Session,
     SpGroupClient,
+    UsageError,
     _drop_future,
     _mfa_channel_from_challenge,
     _oob_factor_authenticator_id,
@@ -40,6 +41,7 @@ from custom_components.sp_group.const import (
     JARVIS_CHARTS_PATH,
     JARVIS_GREEN_GOALS_PATH,
     JARVIS_ME_PATH,
+    JARVIS_PPMS_PATH,
     NJORD_HISTORY_PATH,
     NJORD_PAYABLES_PATH,
     OAUTH_TOKEN_PATH,
@@ -437,6 +439,53 @@ def test_stored_session_skips_password_login() -> None:
     assert all(not req.url.endswith(OAUTH_TOKEN_PATH) for req in transport.requests)
 
 
+def test_expired_stored_session_refreshes_instead_of_sending_the_password() -> None:
+    token_payload = json.loads(load_fixture("oauth_token_success.json"))
+    transport = FixtureTransport()
+    client = SpGroupClient(
+        transport=transport,
+        session=Session(
+            access_token="stale-access",
+            id_token="stale-id",
+            refresh_token=token_payload["refresh_token"],
+            scope=token_payload["scope"],
+            expires_at=int(time.time()) - 1,
+        ),
+    )
+
+    session = client.ensure_session()
+
+    assert session.access_token == token_payload["access_token"]
+    assert session.refresh_token == token_payload["refresh_token"]
+    assert len(transport.requests) == 1
+    recorded = transport.requests[0]
+    assert recorded.url == f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
+    assert recorded.body is not None
+    body = json.loads(recorded.body.decode("utf-8"))
+    assert body["grant_type"] == AUTH0_REFRESH_GRANT
+    assert "password" not in body
+
+
+def test_session_without_a_refresh_token_demands_a_login() -> None:
+    transport = FixtureTransport()
+    client = SpGroupClient(
+        transport=transport,
+        session=Session(
+            access_token="",
+            id_token="stale",
+            refresh_token=None,
+            scope=None,
+            expires_at=0,
+        ),
+    )
+
+    with pytest.raises(AuthError) as raised:
+        client.ensure_session()
+
+    assert raised.value.error == "invalid_grant"
+    assert transport.requests == []
+
+
 def test_refresh_sends_refresh_token_grant() -> None:
     token_payload = json.loads(load_fixture("oauth_token_success.json"))
     transport = FixtureTransport()
@@ -557,6 +606,103 @@ def test_fetch_usage_returns_kwh_and_water_from_charts_fixture() -> None:
     assert any(
         urlparse_path(req.url) == JARVIS_GREEN_GOALS_PATH for req in transport.requests
     )
+
+
+def test_premise_selection_skips_inactive_premises() -> None:
+    """A multi-premise account reads the active premise, not the first listed."""
+    me = json.loads(load_fixture("jarvis_me.json"))
+    inactive = {**me["premises"][0], "id": "premise-000", "active": False}
+    me["premises"] = [inactive, me["premises"][0], {**inactive, "id": "premise-002"}]
+    transport = FixtureTransport(
+        responses={JARVIS_ME_PATH: HttpResponse(200, json.dumps(me).encode("utf-8"))}
+    )
+
+    usage = fixture_client(transport).fetch_usage()
+
+    assert usage.premise.id == "premise-001"
+    charts = [
+        req
+        for req in transport.requests
+        if urlparse_path(req.url).startswith(f"{JARVIS_CHARTS_PATH}/")
+    ]
+    assert charts, "the charts read must target the selected premise"
+    assert all(
+        urlparse_path(req.url) == f"{JARVIS_CHARTS_PATH}/premise-001" for req in charts
+    )
+
+
+def test_premise_selection_falls_back_when_none_is_active() -> None:
+    me = json.loads(load_fixture("jarvis_me.json"))
+    me["premises"][0]["active"] = False
+    me["premises"].insert(0, {"no_id": True})
+
+    client = fixture_client(
+        FixtureTransport(
+            responses={JARVIS_ME_PATH: HttpResponse(200, json.dumps(me).encode())}
+        )
+    )
+
+    assert client._select_premise(me).get("id") == "premise-001"
+
+
+@pytest.mark.parametrize(
+    ("premises", "message"),
+    [
+        pytest.param([], "no premises", id="empty-list"),
+        pytest.param("not-a-list", "no premises", id="not-a-list"),
+        pytest.param([{"no_id": True}, {"id": ""}], "premise id missing", id="no-ids"),
+    ],
+)
+def test_premise_selection_rejects_an_account_with_no_readable_premise(
+    premises: object, message: str
+) -> None:
+    client = fixture_client()
+    with pytest.raises(UsageError) as raised:
+        client._select_premise({"premises": premises})
+    assert message in str(raised.value)
+
+
+def test_ppms_credit_is_read_when_the_premise_enrols() -> None:
+    """PPMS enrolled premises read a balance; unenrolled ones never ask."""
+    me = json.loads(load_fixture("jarvis_me.json"))
+    me["premises"][0]["ppms_details"] = {"exists": True, "account_number": "PPMS-1"}
+    transport = FixtureTransport(
+        responses={
+            JARVIS_ME_PATH: HttpResponse(200, json.dumps(me).encode("utf-8")),
+            f"{JARVIS_PPMS_PATH}/premise-001": HttpResponse(
+                200,
+                b'{"amount": 42.5, "updated_at": "2026-09-01T00:00:00Z"}',
+            ),
+        }
+    )
+
+    usage = fixture_client(transport).fetch_usage()
+
+    assert usage.ppms_credit == pytest.approx(42.5)
+    assert usage.ppms_updated_at == "2026-09-01T00:00:00Z"
+    ppms_paths = [
+        urlparse_path(req.url)
+        for req in transport.requests
+        if urlparse_path(req.url).startswith(JARVIS_PPMS_PATH)
+    ]
+    assert ppms_paths == [f"{JARVIS_PPMS_PATH}/premise-001"]
+
+
+def test_ppms_enrolment_without_a_balance_leaves_the_credit_unset() -> None:
+    me = json.loads(load_fixture("jarvis_me.json"))
+    me["premises"][0]["ppms_details"] = {"exists": True, "account_number": "PPMS-1"}
+    transport = FixtureTransport(
+        responses={
+            JARVIS_ME_PATH: HttpResponse(200, json.dumps(me).encode("utf-8")),
+            f"{JARVIS_PPMS_PATH}/premise-001": HttpResponse(200, b"null"),
+        }
+    )
+
+    usage = fixture_client(transport).fetch_usage()
+
+    assert usage.ppms_credit is None
+    assert usage.ppms_updated_at is None
+    assert usage.electricity is not None
 
 
 def test_me_forbidden_uses_server_error_description() -> None:
