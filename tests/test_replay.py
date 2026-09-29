@@ -9,13 +9,16 @@ same result, and moving the clock moves the AMI window with it.
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from custom_components.sp_group.client import Session
 from custom_components.sp_group.const import SENSOR_KEY_ELECTRICITY_TODAY
 from custom_components.sp_group.history import trim_unreported
 from custom_components.sp_group.mapper import extra_attributes, sensors_from_usage
-from custom_components.sp_group.models import SG_TZ
+from custom_components.sp_group.models import PeriodReading
 
 from .conftest import (
     FIXED_NOW,
@@ -66,8 +69,10 @@ def test_the_clock_decides_which_ami_window_is_asked_for() -> None:
     """One day apart on the clock is one day apart in the requested window."""
     today = _ami_window_starts(FixedClock())
     yesterday = _ami_window_starts(FixedClock(FIXED_NOW - timedelta(days=1)))
-    assert today and yesterday
-    assert today != yesterday
+    # The half-hour window moves with the clock, the 13-month window starts on
+    # the first of the month, so a day apart changes only the first stamp.
+    assert today == ["20260703000000", "20250801000000"]
+    assert yesterday == ["20260702000000", "20250801000000"]
 
 
 def test_token_expiry_is_read_from_the_clock_not_the_host() -> None:
@@ -85,13 +90,7 @@ def test_token_expiry_is_read_from_the_clock_not_the_host() -> None:
 def test_today_kwh_sums_the_slots_of_the_clocks_day() -> None:
     """The reading matches the clock's date, so a later run drops those slots."""
     usage = fixture_client().fetch_usage()
-    slots = trim_unreported(usage.ami_hourly)
-    assert slots, "the charts fixture must carry AMI half-hours"
-    on_the_clock_day = sum(
-        slot.amount
-        for slot in slots
-        if slot.start.astimezone(SG_TZ).date() == FIXED_NOW.date()
-    )
+    assert trim_unreported(usage.ami_hourly), "the fixture must carry AMI half-hours"
 
     def today_kwh(now: FixedClock) -> float | str | None:
         specs = sensors_from_usage(usage, now.now())
@@ -105,8 +104,28 @@ def test_today_kwh_sums_the_slots_of_the_clocks_day() -> None:
         )
         return value if isinstance(value, float) else None
 
-    assert on_the_clock_day > 0
-    assert today_kwh(FixedClock()) == on_the_clock_day
+    # The four fixture half-hours of 2026-08-02, read off the capture rather
+    # than recomputed with the bucketing the sensor is meant to be checked for.
+    assert today_kwh(FixedClock()) == pytest.approx(2.0)
     # A day the fixture has no slots for reads as zero, not as the old day.
     after_the_slots = FixedClock(FIXED_NOW + timedelta(days=1))
     assert today_kwh(after_the_slots) == 0.0
+
+
+def test_today_kwh_buckets_in_singapore_time_not_utc() -> None:
+    """16:00 UTC is already the next day in Singapore, and belongs to it."""
+    usage = replace(
+        fixture_client().fetch_usage(),
+        ami_hourly=(
+            PeriodReading(
+                start=datetime(2026, 8, 1, 16, 30, tzinfo=UTC), amount=1.5
+            ),
+        ),
+    )
+    specs = sensors_from_usage(usage, FIXED_NOW)
+    today = next(
+        spec.native_value
+        for spec in specs
+        if spec.key == SENSOR_KEY_ELECTRICITY_TODAY
+    )
+    assert today == pytest.approx(1.5)

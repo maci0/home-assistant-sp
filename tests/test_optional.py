@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
+from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -113,6 +114,29 @@ def test_empty_optional_payloads_are_skipped() -> None:
     assert paired == []
     assert _parse_greenup({"data": {"account": None}}) is None
     assert _parse_fcu_status({"fcu_not_paired": True}, "thing", "Living") is None
+
+
+def test_bill_delivery_prefers_the_preference_of_the_poll_s_account() -> None:
+    """An account with several preferences reports its own, not the first row."""
+    body = {
+        "preferences": [
+            {"accountNo": "9999999999", "isSoftCopy": True, "isHardCopy": True},
+            {"accountNo": "0012345678", "isSoftCopy": False, "isHardCopy": True},
+        ]
+    }
+
+    chosen = _parse_bill_delivery(body, "12345678")
+
+    assert chosen is not None
+    assert chosen.soft_copy is False
+    assert chosen.hard_copy is True
+    # The padded spelling is the same account number as the bare one.
+    assert _parse_bill_delivery(body, "0012345678") == chosen
+    # No row matches, so the first preference stands rather than nothing.
+    unmatched = _parse_bill_delivery(body, "0000000000")
+    assert unmatched is not None
+    assert unmatched.soft_copy is True
+    assert unmatched.hard_copy is True
 
 
 def test_eva_sgd_string_rules() -> None:
@@ -357,7 +381,9 @@ def test_a_long_paired_fcu_list_is_read_up_to_the_cap() -> None:
     """Each coil is its own request, and the list is upstream data."""
 
     class ManyFcus(FixtureTransport):
-        status_reads = 0
+        def __init__(self) -> None:
+            super().__init__()
+            self.status_reads: list[str] = []
 
         def request(
             self,
@@ -387,13 +413,16 @@ def test_a_long_paired_fcu_list_is_read_up_to_the_cap() -> None:
                     ).encode(),
                 )
             if method == "GET" and parsed.path == FROSTY_FCU_STATUS_PATH:
-                ManyFcus.status_reads += 1
+                self.status_reads.append(parsed.path)
                 return HttpResponse(200, json.dumps({"is_on": True}).encode())
             return super().request(method, url, headers, body, timeout=timeout)
 
-    usage = fixture_client(ManyFcus()).fetch_usage()
+    transport = ManyFcus()
+    usage = fixture_client(transport).fetch_usage()
     assert len(usage.fcus) == MAX_FCU_STATUS_READS
-    assert ManyFcus.status_reads == MAX_FCU_STATUS_READS
+    # Counted by appending to a list, not by ``+= 1`` on a counter the
+    # concurrent pool would race on: a lost increment reads as a missed coil.
+    assert len(transport.status_reads) == MAX_FCU_STATUS_READS
 
 
 def test_graphql_error_messages_are_readable() -> None:
@@ -433,3 +462,28 @@ def test_a_graphql_read_that_answers_200_with_errors_says_so(
         greenup = client._fetch_greenup(session)
     assert greenup is None
     assert "Unauthorized" in caplog.text
+
+
+def test_tariff_consumption_uses_the_newest_period_not_the_last_row() -> None:
+    """A host that lists periods newest-first must not price the oldest one."""
+
+    def series(*amounts: tuple[int, float]) -> UtilitySeries:
+        return UtilitySeries(
+            total=0.0,
+            unit="kWh",
+            periods=tuple(
+                PeriodReading(
+                    start=FIXED_NOW - timedelta(days=age), amount=amount
+                )
+                for age, amount in amounts
+            ),
+            average=None,
+            comparison=None,
+        )
+
+    newest_first = series((0, 142.0), (30, 99.0))
+    assert _tariff_consumption(newest_first) == "142"
+    assert _tariff_consumption(series((30, 99.0), (0, 142.0))) == "142"
+    # A credit or a correction is not a consumption to price against.
+    default = str(TARIFF_DEFAULT_CONSUMPTION_KWH)
+    assert _tariff_consumption(series((0, -10.0))) == default

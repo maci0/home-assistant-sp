@@ -19,8 +19,10 @@ from custom_components.sp_group.const import (
     SENSOR_KEY_BILL_DELIVERY,
     SENSOR_KEY_ELECTRICITY,
     SENSOR_KEY_ELECTRICITY_GOAL,
+    SENSOR_KEY_ELECTRICITY_HOUR,
     SENSOR_KEY_ELECTRICITY_LAST,
     SENSOR_KEY_ELECTRICITY_METER,
+    SENSOR_KEY_ELECTRICITY_TODAY,
     SENSOR_KEY_EV_SESSION,
     SENSOR_KEY_EV_UNPAID,
     SENSOR_KEY_GAS,
@@ -42,6 +44,7 @@ from custom_components.sp_group.const import (
     UNIT_M3,
     UNIT_SGD,
 )
+from custom_components.sp_group.history import trim_unreported
 from custom_components.sp_group.mapper import (
     SensorSpec,
     _currency,
@@ -312,13 +315,49 @@ def test_gas_only_charts_yield_gas_sensors() -> None:
     assert gas.device_class == DEVICE_CLASS_ENERGY
 
 
-def test_failed_auth_does_not_yield_sensor_values() -> None:
+def test_no_usage_yields_no_sensors() -> None:
+    """A poll that came back with nothing publishes nothing, not a zero."""
+    assert sensors_from_usage(None, FIXED_NOW) == []
+
+
+def test_a_failed_login_raises_before_any_read() -> None:
+    """The mapper has no auth branch: the client is what refuses the poll."""
     client = SpGroupClient(
         transport=FixtureTransport(fail_login=True), clock=FixedClock()
     )
     with pytest.raises(AuthError):
         client.login("user@example.com", "wrong")
-    assert sensors_from_usage(None, FIXED_NOW) == []
+
+
+def test_the_hourly_sensor_reads_the_latest_reported_slot() -> None:
+    """The value is the newest half-hour, not the first or the last row."""
+    usage = _usage_with()
+    slots = trim_unreported(usage.ami_hourly)
+    assert slots, "the fixture must carry AMI half-hours"
+
+    spec = _by_key(usage)[SENSOR_KEY_ELECTRICITY_HOUR]
+
+    assert spec.native_value == pytest.approx(max(slots, key=lambda s: s.start).amount)
+    assert spec.state_class == STATE_CLASS_MEASUREMENT
+    assert spec.unit_of_measurement == UNIT_KWH
+    assert spec.suggested_display_precision == 2
+
+
+def test_the_interval_sensors_carry_the_billed_series_attributes() -> None:
+    """Today and last hour are electricity entities: same attributes as the rest.
+
+    They read the same utility series as the main sensor, so they advertise the
+    same billed-period attributes rather than an empty set.
+    """
+    usage = _usage_with()
+
+    for key in (SENSOR_KEY_ELECTRICITY_TODAY, SENSOR_KEY_ELECTRICITY_HOUR):
+        assert extra_attributes(usage, key, FIXED_NOW) == extra_attributes(
+            usage, SENSOR_KEY_ELECTRICITY_LAST, FIXED_NOW
+        )
+        assert extra_attributes(usage, key, FIXED_NOW)["period_count"] == len(
+            usage.electricity_periods
+        )
 
 
 def test_amount_due_unit_follows_the_payable_currency() -> None:
@@ -337,7 +376,11 @@ def test_amount_due_unit_follows_the_payable_currency() -> None:
 
 def test_fcu_key_folds_the_two_spellings_of_one_name() -> None:
     """NFC and NFD spellings of a coil name are one coil, not two entities."""
-    assert _fcu_sensor_key("Café Coil") == _fcu_sensor_key("Café Coil")
+    nfc = "Caf\N{LATIN SMALL LETTER E WITH ACUTE} Coil"
+    nfd = "Cafe\N{COMBINING ACUTE ACCENT} Coil"
+    # The two spellings have to differ, or folding is never exercised.
+    assert nfc != nfd
+    assert _fcu_sensor_key(nfc) == _fcu_sensor_key(nfd)
     # A name the safe form can spell keeps the key it always had.
     assert _fcu_sensor_key("Tengah-001") == "fcu_tengah_001"
 

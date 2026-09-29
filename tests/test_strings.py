@@ -34,6 +34,10 @@ def _sensor_units() -> set[str]:
     return {value for name, value in vars(const).items() if name.startswith("UNIT_")}
 
 
+def _declared(prefix: str) -> set[str]:
+    return {name for name in vars(const) if name.startswith(prefix)}
+
+
 # The mapper builds a spec either directly or through its _spec helper, which
 # takes the value positionally and names the unit argument ``unit``.
 _SPEC_FACTORIES = {"SensorSpec": "native_value", "_spec": "unit_of_measurement"}
@@ -66,15 +70,28 @@ def _field_literals(call: ast.Call, field: str) -> list[ast.expr]:
     return [kw.value for kw in call.keywords if kw.arg == field]
 
 
-def _spec_string_literals(calls: list[ast.Call], field: str) -> list[str]:
-    values: list[str] = []
-    for call in calls:
-        values.extend(
-            value.value
-            for value in _field_literals(call, field)
-            if isinstance(value, ast.Constant) and isinstance(value.value, str)
-        )
-    return values
+def _field_exprs(calls: list[ast.Call], field: str) -> list[ast.expr]:
+    """Every expression a spec call passes for one ``SensorSpec`` field."""
+    return [expr for call in calls for expr in _field_literals(call, field)]
+
+
+def _string_constants(exprs: list[ast.expr]) -> list[str]:
+    """String constants anywhere inside, so an IfExp arm counts as a literal."""
+    return [
+        node.value
+        for expr in exprs
+        for node in ast.walk(expr)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+def _named(exprs: list[ast.expr], prefix: str) -> set[str]:
+    return {
+        node.id
+        for expr in exprs
+        for node in ast.walk(expr)
+        if isinstance(node, ast.Name) and node.id.startswith(prefix)
+    }
 
 
 MAPPER = ast.parse((PACKAGE / "mapper.py").read_text(encoding="utf-8"))
@@ -86,15 +103,24 @@ def test_the_mapper_walk_covers_every_spec_construction() -> None:
     assert len(SPEC_CALLS) >= 10
 
 
-def test_every_spec_state_literal_is_a_declared_constant() -> None:
+def test_every_spec_state_is_a_constant_never_a_literal() -> None:
     """A state written as a literal ships untranslated, so it needs a constant."""
-    states = _spec_string_literals(SPEC_CALLS, "native_value")
-    assert set(states) <= _sensor_states()
+    states = _field_exprs(SPEC_CALLS, "native_value")
+    assert states, "no state expression found; the literal check is vacuous"
+    assert _string_constants(states) == []
+    assert _named(states, "SENSOR_STATE_") <= _declared("SENSOR_STATE_")
+    assert _named(states, "SENSOR_STATE_"), "no state constant is named by a spec"
 
 
-def test_every_spec_unit_literal_is_a_declared_constant() -> None:
-    units = _spec_string_literals(SPEC_CALLS, "unit_of_measurement")
-    assert set(units) <= _sensor_units()
+def test_every_spec_unit_is_a_constant_never_a_literal() -> None:
+    units = _field_exprs(SPEC_CALLS, "unit_of_measurement")
+    assert units, "no unit expression found; the literal check is vacuous"
+    assert _string_constants(units) == []
+    assert _named(units, "UNIT_") <= _declared("UNIT_")
+    assert _named(units, "UNIT_"), "no unit constant is named by a spec"
+    # Every unit constant a spec names is also a value the catalog ships.
+    named = _named(units, "UNIT_")
+    assert {getattr(const, name) for name in named} <= _sensor_units()
 
 
 def test_every_sensor_key_has_a_translated_name() -> None:

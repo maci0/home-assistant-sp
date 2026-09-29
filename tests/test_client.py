@@ -98,11 +98,10 @@ def test_login_sends_auth0_password_realm_body() -> None:
         "grant_type": AUTH0_GRANT_TYPE,
         "realm": AUTH0_REALM,
     }
-
-
-def test_login_scope_includes_me_rbac() -> None:
-    assert "me:rbac" in AUTH0_SCOPE
-    assert "me:uportal" in AUTH0_SCOPE
+    # The scope the request carried is the one the APK sends: reading it here
+    # checks the wire, not just the constant.
+    assert "me:rbac" in body["scope"]
+    assert "me:uportal" in body["scope"]
 
 
 def test_mfa_challenge_exposes_token_and_submit_sends_otp() -> None:
@@ -404,10 +403,10 @@ def test_challenge_mfa_rejects_non_prompt_binding_method() -> None:
     with pytest.raises(AuthError) as exc_info:
         client.challenge_mfa(mfa_token, "sms|dev_abc123")
     assert exc_info.value.error == "challenge_failed"
-
-    channel, oob_code = _mfa_channel_from_challenge(_oob_sms_factor(), None)
-    assert channel == "totp"
-    assert oob_code is None
+    # The failure came from the challenge exchange, not from the factor list.
+    assert transport.requests[-1].url == (
+        f"{AUTH0_MFA_OAUTH_HOST}{AUTH0_MFA_CHALLENGE_PATH}"
+    )
 
 
 def test_challenge_mfa_accepts_the_prompt_binding_method_folded() -> None:
@@ -794,8 +793,12 @@ def test_invalid_credentials_raise_auth_error() -> None:
         client.login("user@example.com", "wrong")
     assert exc_info.value.error == fail_payload["error"]
     assert exc_info.value.error_description == fail_payload["error_description"]
-    with pytest.raises(AuthError):
+    with pytest.raises(AuthError) as unread:
         client.fetch_usage()
+    # With no session to refresh, the poll names the missing credentials as the
+    # cause rather than failing with an error the caller has to interpret.
+    assert unread.value.error == "invalid_grant"
+    assert unread.value.error_description == "login credentials required"
     assert all(urlparse_path(req.url) != JARVIS_ME_PATH for req in transport.requests)
     assert all(
         not urlparse_path(req.url).startswith(JARVIS_CHARTS_PATH)

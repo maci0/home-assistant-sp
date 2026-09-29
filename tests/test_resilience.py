@@ -47,7 +47,7 @@ from custom_components.sp_group.const import (
 )
 from custom_components.sp_group.models import SystemClock, UsageReadings
 
-from .conftest import FixedClock, FixtureTransport, fixture_client
+from .conftest import FixedClock, FixtureTransport, fixture_client, load_fixture
 
 # Paths whose host may be down without costing the caller its billed readings.
 OPTIONAL_PATHS = [
@@ -99,6 +99,91 @@ def test_required_host_failure_reports_as_usage_error() -> None:
     with pytest.raises(UsageError) as raised:
         client.fetch_usage()
     assert JARVIS_ME_PATH in str(raised.value)
+
+
+def test_a_required_read_returning_5xx_is_not_bad_credentials() -> None:
+    """An outage is a usage error; only 401/403 is a credential problem.
+
+    Sending an SP outage into a reauth prompt is the cost of getting this
+    backwards, so the boundary is pinned here rather than inferred from the
+    transport raising, which never reaches the status check at all.
+    """
+    transport = FixtureTransport(
+        responses={JARVIS_ME_PATH: HttpResponse(503, b'{"error":"unavailable"}')}
+    )
+    with pytest.raises(UsageError) as raised:
+        fixture_client(transport).fetch_usage()
+    assert not isinstance(raised.value, AuthError)
+    assert "503" in str(raised.value)
+
+
+def test_a_read_rejected_on_token_is_refreshed_once_and_retried() -> None:
+    """One rejected read costs a refresh and a retry, not a reauth prompt."""
+
+    class RejectFirstMe(FixtureTransport):
+        """Refuses the first /me, as a rotated-away token would."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.me_reads = 0
+
+        def request(
+            self,
+            method: str,
+            url: str,
+            headers: Mapping[str, str],
+            body: bytes | None,
+            *,
+            timeout: int | None = None,
+        ) -> HttpResponse:
+            if urlparse(url).path == JARVIS_ME_PATH:
+                self.me_reads += 1
+                if self.me_reads == 1:
+                    return HttpResponse(401, b'{"error":"invalid_token"}')
+            return super().request(method, url, headers, body, timeout=timeout)
+
+    transport = RejectFirstMe()
+    client = SpGroupClient(
+        transport=transport,
+        clock=FixedClock(),
+        session=Session(
+            access_token="access",
+            id_token="ident",
+            refresh_token="refresh",
+            expires_at=FixedClock().timestamp() + 3600,
+        ),
+    )
+
+    usage = client.fetch_usage()
+
+    assert usage.electricity is not None
+    assert transport.me_reads == 2, "the read is retried exactly once"
+    token_requests = [
+        req for req in transport.requests if urlparse(req.url).path == OAUTH_TOKEN_PATH
+    ]
+    assert len(token_requests) == 1, "one refresh, not one per read"
+
+
+def test_a_read_rejected_without_a_refresh_token_raises() -> None:
+    """No refresh token means there is nothing to retry with, so it surfaces."""
+    transport = FixtureTransport(
+        responses={JARVIS_ME_PATH: HttpResponse(401, b'{"error":"invalid_token"}')}
+    )
+    client = SpGroupClient(
+        transport=transport,
+        clock=FixedClock(),
+        session=Session(
+            access_token="access",
+            id_token="ident",
+            refresh_token=None,
+            expires_at=FixedClock().timestamp() + 3600,
+        ),
+    )
+    with pytest.raises(AuthError):
+        client.fetch_usage()
+    assert not [
+        req for req in transport.requests if urlparse(req.url).path == OAUTH_TOKEN_PATH
+    ], "nothing to refresh with, so no token exchange was attempted"
 
 
 def test_tariff_host_failure_leaves_tariff_unset() -> None:
@@ -771,14 +856,25 @@ def test_an_optional_reads_error_message_is_cleaned(
 ) -> None:
     """The server's own message reaches the log; cap and clean it there too."""
     hostile = "no scope \x1b[31m‮" + "x" * 500
+    me = json.loads(load_fixture("jarvis_me.json"))
+    me["premises"][0]["ppms_details"] = {"exists": True, "account_number": "PPMS-1"}
     transport = FixtureTransport(
         responses={
-            JARVIS_PPMS_PATH: HttpResponse(
+            JARVIS_ME_PATH: HttpResponse(200, json.dumps(me).encode("utf-8")),
+            f"{JARVIS_PPMS_PATH}/premise-001": HttpResponse(
                 401, json.dumps({"error_description": hostile}).encode()
-            )
+            ),
         }
     )
-    fixture_client(transport).fetch_usage()
+    usage = fixture_client(transport).fetch_usage()
+    # The default fixture has no PPMS account, so without the enrolled premise
+    # the read never runs and the assertions below hold against an empty log.
+    assert [
+        request
+        for request in transport.requests
+        if urlparse(request.url).path.startswith(JARVIS_PPMS_PATH)
+    ]
+    assert usage.ppms_credit is None
     logged = "\n".join(
         str(record.msg) % record.args if record.args else str(record.msg)
         for record in caplog.records
@@ -786,3 +882,17 @@ def test_an_optional_reads_error_message_is_cleaned(
     assert hostile not in logged
     assert "\x1b" not in logged
     assert "‮" not in logged
+    # The host's own text is the last field of the read's warning, and it is
+    # capped where it reaches the log rather than at the dialog. The bound
+    # allows the ": " the server message is prefixed with and the "..." the
+    # cap appends.
+    warnings = [
+        record for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert warnings, "a 401 on an optional read has to be reported"
+    for record in warnings:
+        assert isinstance(record.args, tuple), "the warning formats positionally"
+        message = str(record.args[-1])
+        assert len(message) <= ERROR_VALUE_CHARS + 5
+        assert "\x1b" not in message
+        assert "‮" not in message

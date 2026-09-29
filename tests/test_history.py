@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -187,6 +188,35 @@ def test_electricity_graph_uses_ami_not_billed() -> None:
     assert sum(item.amount for item in graph) == pytest.approx(24.0)
     points = cumulative_points(graph)
     assert points[-1].cumulative == pytest.approx(24.0)
+
+
+def test_empty_collections_produce_no_points() -> None:
+    """A premise with nothing billed or metered still polls without a crash."""
+    assert cumulative_points(()) == []
+    assert monthly_bill_points(()) == ()
+    assert fold_half_hours(()) == ()
+    assert merge_ami_periods((), ()) == ()
+    assert cost_points([], 0.3478) == []
+
+
+def test_daily_points_survive_when_the_half_hour_feed_is_empty() -> None:
+    """No half-hourly AMI means every day keeps its daily total, none dropped."""
+    day = datetime(2026, 8, 2, tzinfo=SG_TZ)
+    daily = (PeriodReading(start=day, amount=88.0),)
+
+    assert merge_ami_periods(daily, ()) == daily
+
+
+def test_a_premise_without_ami_graphs_its_billed_periods() -> None:
+    """No AMI window anywhere: the graph is the billed series, not nothing."""
+    usage = dataclasses.replace(
+        fixture_client().fetch_usage(), ami_hourly=(), ami_daily=()
+    )
+
+    graph = electricity_graph_periods(usage)
+
+    assert graph == usage.electricity_periods
+    assert graph, "the fallback needs billed periods to be meaningful"
 
 
 def test_external_statistic_id_is_recorder_safe() -> None:
