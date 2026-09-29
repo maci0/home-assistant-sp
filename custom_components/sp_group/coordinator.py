@@ -60,6 +60,10 @@ _LOGGER = logging.getLogger(__name__)
 
 _PointT = TypeVar("_PointT", bound=HasStart)
 
+# One series to import: the sensor key, the periods behind it, and the
+# recorder metadata the row needs.
+_ImportedSeries = tuple[str, tuple[PeriodReading, ...], str, str | None, str]
+
 
 def _cumulative(point: CumulativePoint) -> float:
     return point.cumulative
