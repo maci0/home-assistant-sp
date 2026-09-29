@@ -39,6 +39,7 @@ from .const import (
     translated_error,
 )
 from .history import (
+    CumulativePoint,
     HasStart,
     cost_points,
     cumulative_points,
@@ -52,11 +53,19 @@ from .mapper import (
     electricity_graph_periods,
     extra_attributes,
 )
-from .models import UsageReadings
+from .models import PeriodReading, UsageReadings
 
 _LOGGER = logging.getLogger(__name__)
 
 _PointT = TypeVar("_PointT", bound=HasStart)
+
+
+def _cumulative(point: CumulativePoint) -> float:
+    return point.cumulative
+
+
+def _amount(point: PeriodReading) -> float:
+    return point.amount
 
 
 class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
@@ -276,64 +285,61 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 "unit_of_measurement": unit,
             }
 
-        series: list[tuple[str, tuple, str, str, str]] = []
         if usage.electricity is not None:
-            periods = electricity_graph_periods(usage)
-            series.append(
-                (
-                    SENSOR_KEY_ELECTRICITY,
-                    periods if periods else usage.electricity.periods,
-                    UNIT_KWH,
-                    "energy",
-                    STATISTIC_NAME_ELECTRICITY,
-                )
-            )
-        if usage.gas is not None:
-            series.append(
-                (
-                    SENSOR_KEY_GAS,
-                    usage.gas.periods,
-                    usage.gas.unit,
-                    "energy" if usage.gas.unit == UNIT_KWH else "volume",
-                    STATISTIC_NAME_GAS,
-                )
-            )
-
-        price = self.electricity_price
-        imported = self._imported_through(usage.premise_id)
-        cost_id = external_statistic_id(
-            usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
-        )
-        if price != self._imported_price:
-            # The cost series is a cumulative product of the price, so a new
-            # price has to reach the points already written. The recorder
-            # overwrites a row it already holds, so dropping the watermark
-            # re-sends the whole series at the new price; keeping it left the
-            # loaded window on the old price and repriced only what came after.
-            imported.pop(cost_id, None)
-        for key, periods, unit, unit_class, name in series:
-            points = cumulative_points(periods)
-            if not points:
-                continue
-            self._add_external_statistics(
-                usage.premise_id,
-                external_statistic_id(usage.premise_id, key),
-                metadata(key, name, unit, unit_class),
-                points,
-                lambda point: point.cumulative,
-            )
-            if key == SENSOR_KEY_ELECTRICITY and price is not None:
+            graph = electricity_graph_periods(usage)
+            points = cumulative_points(graph or usage.electricity.periods)
+            if points:
                 self._add_external_statistics(
                     usage.premise_id,
-                    cost_id,
+                    external_statistic_id(usage.premise_id, SENSOR_KEY_ELECTRICITY),
                     metadata(
-                        STATISTIC_KEY_ELECTRICITY_COST,
-                        STATISTIC_NAME_ELECTRICITY_COST,
-                        UNIT_SGD,
-                        None,
+                        SENSOR_KEY_ELECTRICITY,
+                        STATISTIC_NAME_ELECTRICITY,
+                        UNIT_KWH,
+                        "energy",
                     ),
-                    cost_points(points, price),
-                    lambda point: point.cumulative,
+                    points,
+                    _cumulative,
+                )
+                price = self.electricity_price
+                cost_id = external_statistic_id(
+                    usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
+                )
+                if price != self._imported_price:
+                    # The cost series is a cumulative product of the price, so a
+                    # new price has to reach the points already written. The
+                    # recorder overwrites a row it already holds, so dropping
+                    # the watermark re-sends the whole series at the new price;
+                    # keeping it left the loaded window on the old price and
+                    # repriced only what came after.
+                    self._imported_through(usage.premise_id).pop(cost_id, None)
+                if price is not None:
+                    self._add_external_statistics(
+                        usage.premise_id,
+                        cost_id,
+                        metadata(
+                            STATISTIC_KEY_ELECTRICITY_COST,
+                            STATISTIC_NAME_ELECTRICITY_COST,
+                            UNIT_SGD,
+                            None,
+                        ),
+                        cost_points(points, price),
+                        _cumulative,
+                    )
+        if usage.gas is not None:
+            points = cumulative_points(usage.gas.periods)
+            if points:
+                self._add_external_statistics(
+                    usage.premise_id,
+                    external_statistic_id(usage.premise_id, SENSOR_KEY_GAS),
+                    metadata(
+                        SENSOR_KEY_GAS,
+                        STATISTIC_NAME_GAS,
+                        usage.gas.unit,
+                        "energy" if usage.gas.unit == UNIT_KWH else "volume",
+                    ),
+                    points,
+                    _cumulative,
                 )
         bill_points = monthly_bill_points(usage.bills)
         if bill_points:
@@ -342,6 +348,6 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
                 external_statistic_id(usage.premise_id, SENSOR_KEY_LAST_BILL),
                 metadata(SENSOR_KEY_LAST_BILL, STATISTIC_NAME_BILL, UNIT_SGD, None),
                 bill_points,
-                lambda point: point.amount,
+                _amount,
             )
         self._imported_price = self.electricity_price

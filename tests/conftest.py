@@ -103,7 +103,6 @@ class FixtureTransport:
     mfa_challenge_binding: str = "prompt"
     authenticators_bare: bool = False
     charts_fixture: str = "jarvis_charts.json"
-    smrd_fixture: str | None = "jarvis_smrd.json"
     # Exact responses to force for one path, checked before normal routing.
     responses: dict[str, HttpResponse] = field(default_factory=dict)
     requests: list[RecordedRequest] = field(default_factory=list)
@@ -201,11 +200,9 @@ class FixtureTransport:
             and origin == B2C_HOST
             and path.startswith(f"{JARVIS_SMRD_PATH}/")
         ):
-            if self.smrd_fixture is None:
-                return HttpResponse(status=404, body=b"{}")
             return HttpResponse(
                 status=200,
-                body=load_fixture(self.smrd_fixture),
+                body=load_fixture("jarvis_smrd.json"),
             )
         if method == "POST" and origin == B2C_HOST and path == JARVIS_AMI_PATH:
             grouped = "day"

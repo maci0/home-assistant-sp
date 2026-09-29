@@ -215,7 +215,6 @@ class UsageReadings:
     ppms_updated_at: str | None = None
     ami_hourly: tuple[PeriodReading, ...] = ()
     ami_daily: tuple[PeriodReading, ...] = ()
-    last_bill: BillInfo | None = None
     bills: tuple[BillInfo, ...] = ()
     amount_due: PayableInfo | None = None
     meter_registers: tuple[MeterRegister, ...] = ()
@@ -233,6 +232,10 @@ class UsageReadings:
     @property
     def premise_id(self) -> str:
         return self.premise.id
+
+    @property
+    def last_bill(self) -> BillInfo | None:
+        return self.bills[-1] if self.bills else None
 
     @property
     def electricity_kwh(self) -> float:

@@ -1811,7 +1811,6 @@ class SpGroupClient:
             amount_due = due_future.result()
             green_goals = goals_future.result()
             extras = optional_future.result()
-        last_bill = bills[-1] if bills else None
         return UsageReadings(
             premise=info,
             electricity=electricity,
@@ -1822,7 +1821,6 @@ class SpGroupClient:
             ppms_updated_at=ppms_updated_at,
             ami_hourly=ami_hourly,
             ami_daily=ami_daily,
-            last_bill=last_bill,
             bills=bills,
             amount_due=amount_due,
             meter_registers=meter_registers,

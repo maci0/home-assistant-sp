@@ -87,9 +87,7 @@ def cumulative_points(
     return points
 
 
-def trim_unreported(
-    periods: tuple[PeriodReading, ...] | list[PeriodReading],
-) -> tuple[PeriodReading, ...]:
+def trim_unreported(periods: tuple[PeriodReading, ...]) -> tuple[PeriodReading, ...]:
     """Drop trailing zero slots the AMI feed has not filled yet."""
     ordered = sorted(periods, key=lambda item: item.start)
     last_idx = -1
@@ -101,9 +99,7 @@ def trim_unreported(
     return tuple(ordered[: last_idx + 1])
 
 
-def fold_half_hours(
-    periods: tuple[PeriodReading, ...] | list[PeriodReading],
-) -> tuple[PeriodReading, ...]:
+def fold_half_hours(periods: tuple[PeriodReading, ...]) -> tuple[PeriodReading, ...]:
     """Sum 30-minute AMI slots into SGT clock hours for Energy statistics."""
     buckets: dict[datetime, float] = {}
     for item in periods:
@@ -115,9 +111,7 @@ def fold_half_hours(
     )
 
 
-def monthly_bill_points(
-    bills: tuple[BillInfo, ...] | list[BillInfo],
-) -> tuple[PeriodReading, ...]:
+def monthly_bill_points(bills: tuple[BillInfo, ...]) -> tuple[PeriodReading, ...]:
     """One point per calendar month in SGT, using the issued bill amount."""
     by_month: dict[datetime, float] = {}
     for bill in bills:
@@ -134,8 +128,8 @@ def monthly_bill_points(
 
 
 def merge_ami_periods(
-    daily: tuple[PeriodReading, ...] | list[PeriodReading],
-    hourly: tuple[PeriodReading, ...] | list[PeriodReading],
+    daily: tuple[PeriodReading, ...],
+    hourly: tuple[PeriodReading, ...],
 ) -> tuple[PeriodReading, ...]:
     """Prefer half-hourly AMI on days it covers; keep the daily point for the rest."""
     hourly_days = {item.start.astimezone(SG_TZ).date() for item in hourly}
