@@ -28,7 +28,6 @@ class UtilitySeries:
 @dataclass(frozen=True)
 class MfaChallenge:
     oob_code: str
-    binding_method: str
 
 
 @dataclass(frozen=True)
@@ -174,7 +173,6 @@ class UsageReadings:
     gas: UtilitySeries | None
     meter_reading: MeterReadingInfo | None = None
     ppms_credit: float | None = None
-    ppms_updated_at: str | None = None
     ami_hourly: tuple[PeriodReading, ...] = ()
     ami_daily: tuple[PeriodReading, ...] = ()
     last_bill: BillInfo | None = None

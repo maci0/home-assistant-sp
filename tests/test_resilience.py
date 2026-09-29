@@ -150,7 +150,6 @@ def test_refresh_failure_keeps_the_reason() -> None:
             access_token="stale",
             id_token="stale",
             refresh_token="revoked",
-            scope=None,
             expires_at=0,
         ),
     )

@@ -62,7 +62,6 @@ class FixtureTransport:
     mfa_challenge_binding: str = "prompt"
     authenticators_bare: bool = False
     charts_fixture: str = "jarvis_charts.json"
-    me_fixture: str = "jarvis_me.json"
     smrd_fixture: str | None = "jarvis_smrd.json"
     # Exact responses to force for one path, checked before normal routing.
     responses: dict[str, HttpResponse] = field(default_factory=dict)
@@ -100,18 +99,10 @@ class FixtureTransport:
                     status=403,
                     body=load_fixture("oauth_token_mfa_required.json"),
                 )
-            if (
-                self.mfa_success
-                and request_body.get("grant_type") == AUTH0_MFA_OOB_GRANT
-            ):
-                return HttpResponse(
-                    status=200,
-                    body=load_fixture("oauth_token_mfa_success.json"),
-                )
-            if (
-                self.mfa_success
-                and request_body.get("grant_type") == AUTH0_MFA_OTP_GRANT
-            ):
+            if self.mfa_success and request_body.get("grant_type") in {
+                AUTH0_MFA_OOB_GRANT,
+                AUTH0_MFA_OTP_GRANT,
+            }:
                 return HttpResponse(
                     status=200,
                     body=load_fixture("oauth_token_mfa_success.json"),
@@ -153,7 +144,7 @@ class FixtureTransport:
         if method == "GET" and origin == B2C_HOST and path == JARVIS_ME_PATH:
             return HttpResponse(
                 status=200,
-                body=load_fixture(self.me_fixture),
+                body=load_fixture("jarvis_me.json"),
             )
         if (
             method == "GET"

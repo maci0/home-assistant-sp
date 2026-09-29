@@ -147,7 +147,6 @@ def test_mfa_oob_lists_challenges_and_submits_binding_code() -> None:
 
     challenge = client.challenge_mfa("mfa-token", "sms|dev_abc123")
     assert challenge.oob_code == "oob-code"
-    assert challenge.binding_method == "prompt"
 
     challenged = transport.requests[2]
     assert challenged.method == "POST"
@@ -351,7 +350,7 @@ def test_oob_factor_authenticator_id_requires_string_id() -> None:
 
 def test_mfa_channel_oob_with_valid_challenge() -> None:
     channel, oob_code = _mfa_channel_from_challenge(
-        _oob_sms_factor(), MfaChallenge(oob_code="oob-code", binding_method="prompt")
+        _oob_sms_factor(), MfaChallenge(oob_code="oob-code")
     )
     assert channel == "oob"
     assert oob_code == "oob-code"
@@ -364,11 +363,11 @@ def test_mfa_channel_falls_back_when_challenge_is_none() -> None:
 
 
 def test_mfa_channel_never_oob_without_a_code() -> None:
-    no_code = MfaChallenge(oob_code="", binding_method="prompt")
+    no_code = MfaChallenge(oob_code="")
     channel, oob_code = _mfa_channel_from_challenge(_oob_sms_factor(), no_code)
     assert channel == "totp"
     assert oob_code is None
-    blank = MfaChallenge(oob_code="   ", binding_method="prompt")
+    blank = MfaChallenge(oob_code="   ")
     channel, oob_code = _mfa_channel_from_challenge(_oob_sms_factor(), blank)
     assert channel == "totp"
     assert oob_code is None
@@ -376,7 +375,7 @@ def test_mfa_channel_never_oob_without_a_code() -> None:
 
 def test_mfa_channel_totp_for_non_oob_factor() -> None:
     channel, oob_code = _mfa_channel_from_challenge(
-        _totp_factor(), MfaChallenge(oob_code="oob-code", binding_method="prompt")
+        _totp_factor(), MfaChallenge(oob_code="oob-code")
     )
     assert channel == "totp"
     assert oob_code is None
@@ -431,7 +430,6 @@ def test_stored_session_skips_password_login() -> None:
         access_token=token_payload["access_token"],
         id_token=token_payload["id_token"],
         refresh_token=token_payload["refresh_token"],
-        scope=token_payload["scope"],
         expires_at=int(time.time()) + 3600,
     )
     transport = FixtureTransport()
@@ -496,7 +494,6 @@ def test_refresh_sends_refresh_token_grant() -> None:
             access_token=token_payload["access_token"],
             id_token=token_payload["id_token"],
             refresh_token=token_payload["refresh_token"],
-            scope=token_payload["scope"],
         ),
     )
     client.refresh()

@@ -42,7 +42,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpGroupConfigEntry) -> b
             access_token=access,
             id_token=ident,
             refresh_token=refresh if isinstance(refresh, str) else None,
-            scope=None,
         )
     client = SpGroupClient(
         session=session,

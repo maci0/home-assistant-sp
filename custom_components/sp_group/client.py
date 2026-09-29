@@ -211,7 +211,6 @@ class Session:
     access_token: str
     id_token: str
     refresh_token: str | None
-    scope: str | None
     expires_at: int | None = None
 
     def is_expired(self) -> bool:
@@ -394,12 +393,10 @@ def _session_from_oauth(
     if not isinstance(id_token, str) or not id_token:
         raise AuthError("invalid_grant", "id_token missing")
     refresh = mapping.get("refresh_token")
-    scope = mapping.get("scope")
     return Session(
         access_token=access_token,
         id_token=id_token,
         refresh_token=refresh if isinstance(refresh, str) else fallback_refresh,
-        scope=scope if isinstance(scope, str) else None,
         expires_at=_jwt_exp(access_token),
     )
 
@@ -836,16 +833,12 @@ def _parse_unread(body: object) -> int | None:
     if not isinstance(body, dict):
         return None
     value = body.get("total_unread_notifications")
-    if isinstance(value, bool) or value is None:
+    if isinstance(value, bool) or not isinstance(value, int | str) or value == "":
         return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            return int(value)
-        except ValueError:
-            return None
-    return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def _parse_bill_delivery(
@@ -1152,10 +1145,7 @@ class SpGroupClient:
             raise AuthError(
                 "challenge_failed", f"unsupported binding_method: {binding}"
             )
-        return MfaChallenge(
-            oob_code=oob_code,
-            binding_method=str(binding_method) if binding_method else "prompt",
-        )
+        return MfaChallenge(oob_code=oob_code)
 
     def submit_mfa_oob(
         self, mfa_token: str, oob_code: str, binding_code: str
@@ -1315,22 +1305,26 @@ class SpGroupClient:
             timeout=timeout,
         )
 
-    def _jarvis_post(
+    def _optional_response(
         self,
-        session: Session,
-        path: str,
-        payload: Mapping[str, object],
-        timeout: int = HTTP_TIMEOUT_SECONDS,
-    ) -> HttpResponse:
-        headers = dict(self._auth_headers(session))
-        headers["Content-Type"] = CONTENT_TYPE_JSON
-        return self._transport.request(
-            "POST",
-            f"{B2C_HOST}{path}",
-            headers,
-            json.dumps(payload).encode("utf-8"),
-            timeout=timeout,
-        )
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object] | None,
+        timeout: int = OPTIONAL_HTTP_TIMEOUT_SECONDS,
+    ) -> HttpResponse | None:
+        """Send a read the poll can do without: any failure logs and yields None."""
+        try:
+            return self._transport.request(
+                method,
+                url,
+                headers,
+                json.dumps(payload).encode("utf-8") if payload is not None else None,
+                timeout=timeout,
+            )
+        except TransportError as exc:
+            _LOGGER.warning("skipping optional read: %s", exc)
+            return None
 
     def _optional_get(
         self,
@@ -1338,13 +1332,10 @@ class SpGroupClient:
         path: str,
         timeout: int = OPTIONAL_HTTP_TIMEOUT_SECONDS,
     ) -> object | None:
-        """GET a read the poll can do without: any failure logs and yields None."""
-        try:
-            response = self._jarvis_get(session, path, timeout=timeout)
-        except TransportError as exc:
-            _LOGGER.warning("skipping optional read: %s", exc)
-            return None
-        return _optional_json(response)
+        response = self._optional_response(
+            "GET", f"{B2C_HOST}{path}", self._auth_headers(session), None, timeout
+        )
+        return None if response is None else _optional_json(response)
 
     def _optional_post(
         self,
@@ -1353,12 +1344,12 @@ class SpGroupClient:
         payload: Mapping[str, object],
         timeout: int = OPTIONAL_HTTP_TIMEOUT_SECONDS,
     ) -> object | None:
-        try:
-            response = self._jarvis_post(session, path, payload, timeout=timeout)
-        except TransportError as exc:
-            _LOGGER.warning("skipping optional read: %s", exc)
-            return None
-        return _optional_json(response)
+        headers = dict(self._auth_headers(session))
+        headers["Content-Type"] = CONTENT_TYPE_JSON
+        response = self._optional_response(
+            "POST", f"{B2C_HOST}{path}", headers, payload, timeout
+        )
+        return None if response is None else _optional_json(response)
 
     def _fetch_usage_with(self, session: Session) -> UsageReadings:
         me_response = self._jarvis_get(session, JARVIS_ME_PATH)
@@ -1375,7 +1366,7 @@ class SpGroupClient:
         water = _parse_utility(charts.get("water"), "water")
         gas = _parse_utility(charts.get("gas"), "gas")
         meter_reading, meter_registers = self._fetch_meter_reading(session, info.id)
-        ppms_credit, ppms_updated = self._fetch_ppms(session, info)
+        ppms_credit = self._fetch_ppms(session, info)
         ami_hourly, ami_daily = self._fetch_ami(session, info)
         if (
             electricity is None
@@ -1401,7 +1392,6 @@ class SpGroupClient:
             gas=gas,
             meter_reading=meter_reading,
             ppms_credit=ppms_credit,
-            ppms_updated_at=ppms_updated,
             ami_hourly=ami_hourly,
             ami_daily=ami_daily,
             last_bill=last_bill,
@@ -1471,16 +1461,14 @@ class SpGroupClient:
     def _fetch_eva(
         self, session: Session
     ) -> tuple[EvSessionInfo | None, EvChargeInfo | None, EvUnpaidInfo | None]:
-        try:
-            response = self._jarvis_get(
-                session,
-                EVA_LATEST_SESSION_PATH,
-                timeout=OPTIONAL_HTTP_TIMEOUT_SECONDS,
-            )
-        except TransportError as exc:
-            _LOGGER.warning("skipping optional read: %s", exc)
-            return None, None, None
-        if _eva_scope_denied(response):
+        response = self._optional_response(
+            "GET",
+            f"{B2C_HOST}{EVA_LATEST_SESSION_PATH}",
+            self._auth_headers(session),
+            None,
+            OPTIONAL_HTTP_TIMEOUT_SECONDS,
+        )
+        if response is None or _eva_scope_denied(response):
             return None, None, None
         ev_session = _parse_ev_session(_optional_json(response))
         history_qs = urlencode({"offSet": "0", "pageSize": "5"})
@@ -1516,40 +1504,24 @@ class SpGroupClient:
         return tuple(out)
 
     def _fetch_tariff(self, electricity: UtilitySeries | None) -> TariffInfo | None:
-        consumption = _tariff_consumption(electricity)
-        try:
-            response = self._transport.request(
-                "GET",
-                f"{PUBLIC_HOST}{PRICEPLAN_PATH}"
-                f"?{urlencode({'consumption': consumption})}",
-                {
-                    "User-Agent": USER_AGENT,
-                    "Accept": "application/json",
-                },
-                None,
-                timeout=OPTIONAL_HTTP_TIMEOUT_SECONDS,
-            )
-        except TransportError as exc:
-            _LOGGER.warning("skipping optional read: %s", exc)
-            return None
-        body = _optional_json(response)
-        if body is None:
-            return None
-        return _parse_tariff(body)
+        query = urlencode({"consumption": _tariff_consumption(electricity)})
+        response = self._optional_response(
+            "GET",
+            f"{PUBLIC_HOST}{PRICEPLAN_PATH}?{query}",
+            {"User-Agent": USER_AGENT, "Accept": "application/json"},
+            None,
+        )
+        return None if response is None else _parse_tariff(_optional_json(response))
 
-    def _fetch_ppms(
-        self, session: Session, premise: PremiseInfo
-    ) -> tuple[float | None, str | None]:
+    def _fetch_ppms(self, session: Session, premise: PremiseInfo) -> float | None:
         if not premise.ppms_exists:
-            return None, None
+            return None
         body = self._optional_get(
             session, f"{JARVIS_PPMS_PATH}/{premise.id}", timeout=HTTP_TIMEOUT_SECONDS
         )
         if not isinstance(body, dict):
-            return None, None
-        return _optional_float(body.get("amount")), _optional_str(
-            body.get("updated_at")
-        )
+            return None
+        return _optional_float(body.get("amount"))
 
     def _fetch_bills(
         self, session: Session, account_number: str | None

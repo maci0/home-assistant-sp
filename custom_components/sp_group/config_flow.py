@@ -112,8 +112,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         exc: AuthError,
         user_input: dict[str, Any],
-        mode: str,
-        entry: config_entries.ConfigEntry | None = None,
+        entry: config_entries.ConfigEntry | None,
     ) -> config_entries.ConfigFlowResult | None:
         """The verification form when Auth0 asked for a code, else None to report.
 
@@ -121,8 +120,9 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         the user-facing form, so the code arrives while the form is shown. It is
         only triggered when the account has no usable authenticator-app factor,
         since the client prefers TOTP over out-of-band. Any failure to probe or
-        challenge falls back to the single-code form and lets the server tell
-        the user.
+        challenge falls back to the TOTP single-code form and lets the server
+        tell the user. A new account has no ``entry``; the MFA step then creates
+        one instead of updating.
         """
         if exc.error != "mfa_required" or not exc.mfa_token:
             return None
@@ -130,7 +130,6 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_USERNAME: user_input[CONF_USERNAME],
             CONF_PASSWORD: user_input[CONF_PASSWORD],
             "mfa_token": exc.mfa_token,
-            "mode": mode,
             "entry": entry,
         }
         client = SpGroupClient()
@@ -173,10 +172,9 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except (UsageError, OSError):
                 errors["base"] = "cannot_connect"
             else:
-                mode = context["mode"]
-                if mode == "user":
-                    return self.async_create_entry(title="SP Group", data=data)
                 entry = context["entry"]
+                if entry is None:
+                    return self.async_create_entry(title="SP Group", data=data)
                 return self.async_update_reload_and_abort(entry, data_updates=data)
         return self._mfa_form(errors)
 
@@ -194,7 +192,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_PASSWORD],
                 )
             except AuthError as exc:
-                mfa = await self._start_mfa(exc, user_input, "user")
+                mfa = await self._start_mfa(exc, user_input, None)
                 if mfa is not None:
                     return mfa
                 errors["base"] = _auth_error_key(exc)
@@ -214,35 +212,32 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> config_entries.ConfigFlowResult:
-        return await self._credentials_step(
-            self._get_reauth_entry(), "reauth_confirm", "reauth"
-        )
+        return await self._credentials_step(self._get_reauth_entry(), "reauth_confirm")
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         return await self._credentials_step(
-            self._get_reauth_entry(), "reauth_confirm", "reauth", user_input
+            self._get_reauth_entry(), "reauth_confirm", user_input
         )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         return await self._credentials_step(
-            self._get_reconfigure_entry(), "reconfigure", "reconfigure", user_input
+            self._get_reconfigure_entry(), "reconfigure", user_input
         )
 
     async def _credentials_step(
         self,
         entry: config_entries.ConfigEntry,
         step_id: str,
-        mode: str,
         user_input: dict[str, Any] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """Ask for the credentials again and update the entry on success.
 
         The reauth and the reconfigure flow ask the same question and differ
-        only in which entry they update and the mode the MFA step resumes in.
+        only in which step they show and which entry they update.
         """
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -253,7 +248,7 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_PASSWORD],
                 )
             except AuthError as exc:
-                mfa = await self._start_mfa(exc, user_input, mode, entry)
+                mfa = await self._start_mfa(exc, user_input, entry)
                 if mfa is not None:
                     return mfa
                 errors["base"] = _auth_error_key(exc)

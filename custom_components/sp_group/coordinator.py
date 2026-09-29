@@ -200,6 +200,19 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             StatisticMeanType,
         )
 
+        def metadata(
+            key: str, name: str, unit: str, unit_class: str | None
+        ) -> dict[str, object]:
+            return {
+                "has_sum": True,
+                "mean_type": StatisticMeanType.NONE,
+                "name": name,
+                "source": DOMAIN,
+                "statistic_id": external_statistic_id(usage.premise_id, key),
+                "unit_class": unit_class,
+                "unit_of_measurement": unit,
+            }
+
         series: list[tuple[str, tuple, str, str]] = []
         if usage.electricity is not None:
             periods = electricity_graph_periods(usage)
@@ -226,60 +239,34 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             points = cumulative_points(periods)
             if not points:
                 continue
-            metadata = {
-                "has_sum": True,
-                "mean_type": StatisticMeanType.NONE,
-                "name": f"SP Group {key}",
-                "source": DOMAIN,
-                "statistic_id": external_statistic_id(usage.premise_id, key),
-                "unit_class": unit_class,
-                "unit_of_measurement": unit,
-            }
             self._add_external_statistics(
                 usage.premise_id,
                 external_statistic_id(usage.premise_id, key),
-                metadata,
+                metadata(key, f"SP Group {key}", unit, unit_class),
                 points,
                 lambda point: point.cumulative,
             )
             if key == SENSOR_KEY_ELECTRICITY and price is not None:
-                cost_metadata = {
-                    "has_sum": True,
-                    "mean_type": StatisticMeanType.NONE,
-                    "name": "SP Group electricity cost",
-                    "source": DOMAIN,
-                    "statistic_id": external_statistic_id(
-                        usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
-                    ),
-                    "unit_class": None,
-                    "unit_of_measurement": UNIT_SGD,
-                }
                 self._add_external_statistics(
                     usage.premise_id,
                     external_statistic_id(
                         usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
                     ),
-                    cost_metadata,
+                    metadata(
+                        STATISTIC_KEY_ELECTRICITY_COST,
+                        "SP Group electricity cost",
+                        UNIT_SGD,
+                        None,
+                    ),
                     cost_points(points, price),
                     lambda point: point.cumulative,
                 )
         bill_points = monthly_bill_points(usage.bills)
         if bill_points:
-            metadata = {
-                "has_sum": True,
-                "mean_type": StatisticMeanType.NONE,
-                "name": "SP Group bill",
-                "source": DOMAIN,
-                "statistic_id": external_statistic_id(
-                    usage.premise_id, SENSOR_KEY_LAST_BILL
-                ),
-                "unit_class": None,
-                "unit_of_measurement": UNIT_SGD,
-            }
             self._add_external_statistics(
                 usage.premise_id,
                 external_statistic_id(usage.premise_id, SENSOR_KEY_LAST_BILL),
-                metadata,
+                metadata(SENSOR_KEY_LAST_BILL, "SP Group bill", UNIT_SGD, None),
                 bill_points,
                 lambda point: point.amount,
             )
