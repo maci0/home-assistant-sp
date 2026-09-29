@@ -38,6 +38,8 @@ files = [
     "custom_components/sp_group/const.py",
     "custom_components/sp_group/history.py",
     "custom_components/sp_group/models.py",
+    "scripts/launch_client.py",
+    "scripts/live_api.py",
 ]
 
 [[tool.mypy.overrides]]

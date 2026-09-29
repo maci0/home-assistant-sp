@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from http.client import HTTPException
-from typing import TypeGuard
+from typing import Protocol, TypeGuard
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -152,6 +152,20 @@ class TransportError(UsageError):
 class HttpResponse:
     status: int
     body: bytes
+
+
+class Transport(Protocol):
+    """Seam the client sends every request through; tests supply a fixture one."""
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        *,
+        timeout: int | None = None,
+    ) -> HttpResponse: ...
 
 
 class UrllibTransport:
@@ -1014,7 +1028,7 @@ def _parse_ami_rows(body: object) -> tuple[PeriodReading, ...]:
 class SpGroupClient:
     def __init__(
         self,
-        transport: UrllibTransport | None = None,
+        transport: Transport | None = None,
         session: Session | None = None,
     ) -> None:
         self._transport = transport or UrllibTransport()

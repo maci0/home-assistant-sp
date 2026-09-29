@@ -166,16 +166,21 @@ automation:
 ## Development
 
 ```
-uv sync --extra dev
-uv run ruff check custom_components tests
-uv run ruff format --check custom_components tests
+uv sync --extra dev --frozen
+uv run ruff check custom_components tests scripts
+uv run ruff format --check custom_components tests scripts
 uv run mypy
 uv run pytest
+uv run mypy
 uv run python scripts/launch_client.py
 ```
 
 The first five are what CI runs. `scripts/launch_client.py` replays the
 recorded fixtures through the shipped client and needs no credentials.
+
+`--frozen` fails if `uv.lock` disagrees with `pyproject.toml`, so CI and a
+local checkout install the same versions. Use `uv sync --extra dev` only when
+intentionally changing dependencies, then commit the updated `uv.lock`.
 
 Optional live call: `SP_USERNAME` and `SP_PASSWORD`. Both are required; the
 script exits 1 naming the missing one, 2 on rejected credentials, 3 on a usage
