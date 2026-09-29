@@ -1,9 +1,10 @@
 """SP Group Home Assistant integration.
 
-Setup imports homeassistant and the sibling modules inside ``async_setup_entry``
-rather than at module scope: this is the package ``__init__``, so every
-``custom_components.sp_group.*`` import runs it, and the tests exercise the
-client, mapper, and history modules without homeassistant installed.
+Setup imports homeassistant and every sibling that needs it inside
+``async_setup_entry`` rather than at module scope: this is the package
+``__init__``, so every ``custom_components.sp_group.*`` import runs it, and the
+tests exercise the client, mapper, and history modules without homeassistant
+installed. ``const`` has no homeassistant dependency and is imported here.
 """
 
 # mypy: ignore-errors

@@ -30,7 +30,9 @@ FROSTY_FCU_STATUS_PATH = "/frosty/fcu_status"
 PRICEPLAN_PATH = "/priceplan/v2/plans/price"
 
 # SmartMeterChartRequestModel: HOURLY -> grouped_by "day" (30-min slots),
-# DAILY -> grouped_by "month" (one point per day).
+# DAILY -> grouped_by "month" (one point per day). The client asks for the
+# half-hour feed over AMI_HALF_HOUR_DAYS and the daily feed over
+# AMI_DAILY_MONTHS, which together set the window the statistics cover.
 AMI_GROUPED_BY_HALF_HOUR = "day"
 AMI_GROUPED_BY_DAILY = "month"
 AMI_HALF_HOUR_DAYS = 31

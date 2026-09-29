@@ -1,4 +1,8 @@
-"""Turn billed Jarvis periods into cumulative hourly points for HA statistics."""
+"""Shape usage and bill periods into the series written to HA statistics.
+
+Billed Jarvis periods become cumulative points for the recorder, AMI half-hours
+are folded to clock hours, and bills collapse to one point per calendar month.
+"""
 
 from __future__ import annotations
 
@@ -103,7 +107,7 @@ def merge_ami_periods(
     daily: tuple[PeriodReading, ...] | list[PeriodReading],
     hourly: tuple[PeriodReading, ...] | list[PeriodReading],
 ) -> tuple[PeriodReading, ...]:
-    """Prefer half-hourly AMI on days that have it; keep daily points before that."""
+    """Prefer half-hourly AMI on days it covers; keep the daily point for the rest."""
     hourly_days = {item.start.astimezone(SG_TZ).date() for item in hourly}
     merged = [
         item for item in daily if item.start.astimezone(SG_TZ).date() not in hourly_days

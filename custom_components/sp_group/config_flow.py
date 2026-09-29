@@ -112,11 +112,12 @@ class SpGroupConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult | None:
         """The verification form when Auth0 asked for a code, else None to report.
 
-        When the account's only enrolled factor is an out-of-band (SMS/email)
-        oob factor, the challenge that sends the code is triggered here, before
-        the user-facing form, so the code arrives while the form is shown. Any
-        failure to probe or challenge falls back to the TOTP single-code form
-        and lets the server tell the user.
+        The challenge that sends an SMS or email code is triggered here, before
+        the user-facing form, so the code arrives while the form is shown. It is
+        only triggered when the account has no usable authenticator-app factor,
+        since the client prefers TOTP over out-of-band. Any failure to probe or
+        challenge falls back to the single-code form and lets the server tell
+        the user.
         """
         if exc.error != "mfa_required" or not exc.mfa_token:
             return None
