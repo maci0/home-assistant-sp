@@ -413,6 +413,16 @@ def _read_label(method: str, url: str) -> str:
     return f"{method} {_loggable_url(url)}"
 
 
+def _error_text(mapping: dict[str, object]) -> str:
+    """The host's own explanation of a failure, in the order SP states it."""
+    return str(
+        mapping.get("error_description")
+        or mapping.get("error")
+        or mapping.get("message")
+        or ""
+    )
+
+
 def _server_message(response: HttpResponse) -> str:
     """Whatever the host said went wrong, quoted short and redacted.
 
@@ -427,12 +437,7 @@ def _server_message(response: HttpResponse) -> str:
         return ""
     if not isinstance(decoded, dict):
         return ""
-    message = str(
-        decoded.get("error_description")
-        or decoded.get("error")
-        or decoded.get("message")
-        or ""
-    )
+    message = _error_text(decoded)
     text = _safe_text(message)
     return f": {text}" if text else ""
 
@@ -563,11 +568,18 @@ def _require_mapping(value: object, label: str) -> dict[str, object]:
     return value
 
 
+def _is_number(value: object) -> TypeGuard[int | float | str]:
+    """The types a reading can carry, excluding a bool and a missing value.
+
+    bool is a subclass of int, so ``float(True)`` is 1.0 and a flag in a
+    payload would read as a one-unit measurement.
+    """
+    return not isinstance(value, bool) and isinstance(value, (int, float, str))
+
+
 def _float(value: object) -> float:
     """Billed consumption: a malformed number fails the read, never reads as zero."""
-    if isinstance(value, bool) or value is None:
-        return 0.0
-    if not isinstance(value, (int, float, str)) or value == "":
+    if not _is_number(value) or value == "":
         return 0.0
     number = _optional_float(value)
     if number is None:
@@ -582,9 +594,7 @@ def _optional_float(value: object) -> float | None:
     an out-of-range JSON integer overflows float(); none of the three can be a
     sensor state.
     """
-    if isinstance(value, bool) or value is None:
-        return None
-    if not isinstance(value, (int, float, str)) or value == "":
+    if not _is_number(value) or value == "":
         return None
     try:
         number = float(value)
@@ -762,13 +772,13 @@ def _energy_or_volume_unit(unit: str, kind: str) -> str:
     """
     folded = fold_text(unit)
     compact = "".join(folded.split())
-    volume = (
-        "m³" if compact in {"m3", "cum", "cu.m", "cbm"} else (folded.strip() or "m³")
-    )
     if kind == "elec":
         if unit and compact not in {"kwh", "kw·h"}:
             raise UsageError(f"unexpected electricity unit {_safe_text(unit)}")
         return "kWh"
+    volume = (
+        "m³" if compact in {"m3", "cum", "cu.m", "cbm"} else (folded.strip() or "m³")
+    )
     if kind == "water":
         return volume
     if compact in {"kwh", "kw·h"}:
@@ -1370,6 +1380,14 @@ class SpGroupClient:
     def session(self) -> Session | None:
         return self._session
 
+    def _adopt_session(
+        self, mapping: dict[str, object], fallback_refresh: str | None = None
+    ) -> Session:
+        """Take a freshly issued token set as the session every later read uses."""
+        session = _session_from_oauth(mapping, fallback_refresh)
+        self._session = session
+        return session
+
     def login(self, username: str, password: str) -> Session:
         cooldown = _login_cooldown(username, self._clock)
         if cooldown > 0:
@@ -1396,9 +1414,7 @@ class SpGroupClient:
                 _note_login_failure(username, self._clock)
             raise
         _clear_login_failures(username)
-        session = _session_from_oauth(mapping, None)
-        self._session = session
-        return session
+        return self._adopt_session(mapping)
 
     def submit_mfa(self, mfa_token: str, otp: str) -> Session:
         """Exchange an Auth0 MFA token and one-time password for a session."""
@@ -1408,10 +1424,7 @@ class SpGroupClient:
             "mfa_token": mfa_token,
             "otp": otp,
         }
-        mapping = self._oauth_post(payload)
-        session = _session_from_oauth(mapping, None)
-        self._session = session
-        return session
+        return self._adopt_session(self._oauth_post(payload))
 
     def _auth0_mfa_request(
         self,
@@ -1496,10 +1509,7 @@ class SpGroupClient:
             "oob_code": oob_code,
             "binding_code": binding_code,
         }
-        mapping = self._oauth_post(payload)
-        session = _session_from_oauth(mapping, None)
-        self._session = session
-        return session
+        return self._adopt_session(self._oauth_post(payload))
 
     def prepare_mfa(self, mfa_token: str) -> tuple[str, str | None]:
         """Pick a factor and send the SMS/email challenge when that is the path.
@@ -1545,9 +1555,7 @@ class SpGroupClient:
             "grant_type": AUTH0_REFRESH_GRANT,
         }
         mapping = self._oauth_post(payload)
-        session = _session_from_oauth(mapping, current.refresh_token)
-        self._session = session
-        return session
+        return self._adopt_session(mapping, current.refresh_token)
 
     def ensure_session(self) -> Session:
         current = self._session
@@ -2068,12 +2076,7 @@ class SpGroupClient:
             decoded = {}
         if isinstance(decoded, dict):
             mapping = decoded
-        extra = _safe_text(
-            mapping.get("error_description")
-            or mapping.get("error")
-            or mapping.get("message")
-            or ""
-        )
+        extra = _safe_text(_error_text(mapping))
         if response.status in {401, 403}:
             raise AuthError(
                 str(mapping.get("error") or "unauthorized"),

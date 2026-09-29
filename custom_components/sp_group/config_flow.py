@@ -249,12 +249,11 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
                     user_input[CONF_USERNAME],
                     user_input[CONF_PASSWORD],
                 )
-            except AuthError as exc:
-                mfa = await self._start_mfa(exc, user_input, None)
-                if mfa is not None:
-                    return mfa
-                _report_failure("login", exc, errors)
-            except (UsageError, OSError) as exc:
+            except (AuthError, UsageError, OSError) as exc:
+                if isinstance(exc, AuthError):
+                    mfa = await self._start_mfa(exc, user_input, None)
+                    if mfa is not None:
+                        return mfa
                 _report_failure("login", exc, errors)
             else:
                 return self.async_create_entry(
@@ -305,12 +304,11 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
                     user_input[CONF_USERNAME],
                     user_input[CONF_PASSWORD],
                 )
-            except AuthError as exc:
-                mfa = await self._start_mfa(exc, user_input, entry)
-                if mfa is not None:
-                    return mfa
-                _report_failure(step_id, exc, errors)
-            except (UsageError, OSError) as exc:
+            except (AuthError, UsageError, OSError) as exc:
+                if isinstance(exc, AuthError):
+                    mfa = await self._start_mfa(exc, user_input, entry)
+                    if mfa is not None:
+                        return mfa
                 _report_failure(step_id, exc, errors)
             else:
                 await self.async_set_unique_id(fold_text(user_input[CONF_USERNAME]))

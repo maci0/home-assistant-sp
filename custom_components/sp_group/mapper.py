@@ -15,7 +15,9 @@ from .const import (
     DEVICE_CLASS_WATER,
     ENTITY_CATEGORY_DIAGNOSTIC,
     GOAL_KIND_ELECTRICITY,
+    GOAL_KIND_WATER,
     METER_UTILITY_ELECTRICITY,
+    METER_UTILITY_WATER,
     SENSOR_KEY_ACCOUNT,
     SENSOR_KEY_AMOUNT_DUE,
     SENSOR_KEY_BILL_DELIVERY,
@@ -228,7 +230,7 @@ def extra_attributes(
         meter = usage.meter(
             METER_UTILITY_ELECTRICITY
             if key == SENSOR_KEY_ELECTRICITY_METER
-            else "water"
+            else METER_UTILITY_WATER
         )
         if meter is not None:
             attrs["meter_id"] = meter.meter_id
@@ -236,7 +238,9 @@ def extra_attributes(
         return _omit_none(attrs)
     if key in {SENSOR_KEY_ELECTRICITY_GOAL, SENSOR_KEY_WATER_GOAL}:
         goal = usage.goal(
-            GOAL_KIND_ELECTRICITY if key == SENSOR_KEY_ELECTRICITY_GOAL else "water"
+            GOAL_KIND_ELECTRICITY
+            if key == SENSOR_KEY_ELECTRICITY_GOAL
+            else GOAL_KIND_WATER
         )
         if goal is not None:
             attrs["goal_month"] = goal.month
@@ -349,21 +353,9 @@ def extra_attributes(
     return _omit_none(attrs)
 
 
-def _last_spec(key: str, series: UtilitySeries, precision: int) -> SensorSpec:
-    last = _last_period(series.periods)
-    return SensorSpec(
-        key=key,
-        native_value=last.amount if last is not None else None,
-        device_class=None,
-        state_class=STATE_CLASS_MEASUREMENT,
-        unit_of_measurement=series.unit,
-        suggested_display_precision=precision,
-    )
-
-
 def _spec(
     key: str,
-    value: float | str,
+    value: float | str | None,
     *,
     device_class: str | None = None,
     state_class: str | None = None,
@@ -385,14 +377,20 @@ def _spec(
     )
 
 
-def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[SensorSpec]:
-    """Return energy/water/gas sensors plus account diagnostics.
+def _last_spec(key: str, series: UtilitySeries, precision: int) -> SensorSpec:
+    """The latest billed period of a series, in that series' own unit."""
+    last = _last_period(series.periods)
+    return _spec(
+        key,
+        last.amount if last is not None else None,
+        state_class=STATE_CLASS_MEASUREMENT,
+        unit=series.unit,
+        precision=precision,
+    )
 
-    ``now`` is the caller's clock reading, so the today-bucketed sensors
-    describe the same instant the poll read its data at.
-    """
-    if usage is None:
-        return []
+
+def _utility_specs(usage: UsageReadings, now: datetime) -> list[SensorSpec]:
+    """The billed electricity, water, and gas readings, plus the AMI extras."""
     specs: list[SensorSpec] = []
     if usage.electricity is not None:
         graph = electricity_graph_periods(usage)
@@ -456,6 +454,12 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
             )
         )
         specs.append(_last_spec(SENSOR_KEY_GAS_LAST, usage.gas, 1 if is_kwh else 2))
+    return specs
+
+
+def _billing_specs(usage: UsageReadings) -> list[SensorSpec]:
+    """Account, credit, bill, and payable, all diagnostic or monetary."""
+    specs: list[SensorSpec] = []
     specs.append(
         _spec(
             SENSOR_KEY_ACCOUNT,
@@ -495,6 +499,12 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 precision=2,
             )
         )
+    return specs
+
+
+def _register_specs(usage: UsageReadings) -> list[SensorSpec]:
+    """The SMRD meter registers and the Green Goals monthly progress."""
+    specs: list[SensorSpec] = []
     elec_meter = usage.meter(METER_UTILITY_ELECTRICITY)
     if elec_meter is not None:
         # total, not total_increasing: a register is a running lifetime total,
@@ -510,7 +520,7 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 precision=0,
             )
         )
-    water_meter = usage.meter("water")
+    water_meter = usage.meter(METER_UTILITY_WATER)
     if water_meter is not None:
         specs.append(
             _spec(
@@ -533,7 +543,7 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 precision=1,
             )
         )
-    water_goal = usage.goal("water")
+    water_goal = usage.goal(GOAL_KIND_WATER)
     if water_goal is not None:
         specs.append(
             _spec(
@@ -544,6 +554,12 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 precision=2,
             )
         )
+    return specs
+
+
+def _service_specs(usage: UsageReadings) -> list[SensorSpec]:
+    """The optional programs: GreenUP, Eva, notifications, delivery, tariff."""
+    specs: list[SensorSpec] = []
     if usage.greenup is not None:
         specs.append(
             _spec(
@@ -612,6 +628,23 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             )
         )
+    if usage.tariff is not None and usage.tariff.kwh_price is not None:
+        specs.append(
+            _spec(
+                SENSOR_KEY_TARIFF,
+                usage.tariff.kwh_price,
+                device_class=DEVICE_CLASS_MONETARY,
+                unit=UNIT_SGD,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+                precision=4,
+            )
+        )
+    return specs
+
+
+def _fcu_specs(usage: UsageReadings) -> list[SensorSpec]:
+    """One sensor per paired Frosty coil, each under its own key."""
+    specs: list[SensorSpec] = []
     for fcu in usage.fcus:
         temperature = fcu.room_temperature
         has_temp = temperature is not None
@@ -628,18 +661,24 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 name=fcu.display_name or fcu.thing_name,
             )
         )
-    if usage.tariff is not None and usage.tariff.kwh_price is not None:
-        specs.append(
-            _spec(
-                SENSOR_KEY_TARIFF,
-                usage.tariff.kwh_price,
-                device_class=DEVICE_CLASS_MONETARY,
-                unit=UNIT_SGD,
-                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-                precision=4,
-            )
-        )
     return specs
+
+
+def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[SensorSpec]:
+    """Return energy/water/gas sensors plus account diagnostics.
+
+    ``now`` is the caller's clock reading, so the today-bucketed sensors
+    describe the same instant the poll read its data at.
+    """
+    if usage is None:
+        return []
+    return [
+        *_utility_specs(usage, now),
+        *_billing_specs(usage),
+        *_register_specs(usage),
+        *_service_specs(usage),
+        *_fcu_specs(usage),
+    ]
 
 
 class SensorSpecCache:

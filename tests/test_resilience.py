@@ -44,7 +44,7 @@ from custom_components.sp_group.const import (
     PUBLIC_HOST,
     TYCHE_WALLET_PATH,
 )
-from custom_components.sp_group.models import UsageReadings
+from custom_components.sp_group.models import SystemClock, UsageReadings
 
 from .conftest import FixedClock, FixtureTransport, fixture_client
 
@@ -634,7 +634,7 @@ def test_expired_login_cooldowns_do_not_stay_in_the_map(
     # Only the name that just failed is still throttled; the twenty before it
     # were past their cooldown and could not act on anything.
     assert list(client_module._LOGIN_FAILURES) == ["user20@example.com"]
-    assert _login_cooldown("user0@example.com", client_module.SystemClock()) == 0
+    assert _login_cooldown("user0@example.com", SystemClock()) == 0
 
 
 def test_upstream_error_text_is_stripped_and_bounded() -> None:

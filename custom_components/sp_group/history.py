@@ -43,6 +43,12 @@ def unimported[Started: HasStart](
     return [point for point in points if point.start > imported_through]
 
 
+@dataclass(frozen=True)
+class CumulativePoint:
+    start: datetime
+    cumulative: float
+
+
 def cost_points(
     points: list[CumulativePoint] | tuple[CumulativePoint, ...], price: float
 ) -> list[CumulativePoint]:
@@ -63,12 +69,6 @@ def external_statistic_id(premise_id: str, key: str) -> str:
     ``total_increasing`` state class would get a second, conflicting sum.
     """
     return f"{DOMAIN}:{premise_id}_{key}"
-
-
-@dataclass(frozen=True)
-class CumulativePoint:
-    start: datetime
-    cumulative: float
 
 
 def cumulative_points(

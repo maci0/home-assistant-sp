@@ -144,11 +144,13 @@ MONEY_PRECISION = 20
 # bytes on the wire, and 64 code points of one is already past the cap.
 MAX_USERNAME_OCTETS = 254
 
-# How SP spells the electricity utility in each payload. The SMRD registers say
-# "electric" and Green Goals say "elec"; both lookups fold before comparing, so
-# these are the wire spellings, not two names for one thing.
+# How SP spells each utility in each payload. The SMRD registers say "electric"
+# and Green Goals say "elec"; both lookups fold before comparing, so these are
+# the wire spellings, not two names for one thing.
 METER_UTILITY_ELECTRICITY = "electric"
+METER_UTILITY_WATER = "water"
 GOAL_KIND_ELECTRICITY = "elec"
+GOAL_KIND_WATER = "water"
 
 # How much of an offending value a parse error quotes back, so a hostile
 # response cannot push a megabyte of text into the log.
