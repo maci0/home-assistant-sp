@@ -38,7 +38,7 @@ Copy `custom_components/sp_group` into `<config>/custom_components/sp_group` and
 Polls every 30 minutes. After the first successful poll, long-term statistics are written for electricity (and gas when present), plus one **SP Group bill** point per billed month (`sp_group:{premise_id}_last_bill`) when Njord returned bills.
 
 - Grid consumption: the external statistic **SP Group electricity** (`sp_group:{premise_id}_electricity`), not a sensor. That series is AMI half-hours folded to clock hours, backed by the AMI daily points for days the half-hour feed does not cover, when the premise has `ami_elec`; otherwise billed monthly kWh. It is the loaded window (~13 months), not today.
-- Cost: set **Electricity price** in the integration's options (SGD per kWh, incl. GST; SP publishes the regulated tariff quarterly). The integration then writes **SP Group electricity cost** (`sp_group:{premise_id}_electricity_cost`); pick it as the grid source's total-cost statistic. HA cannot derive cost from a fixed price for an external statistic on its own.
+- Cost: set **Electricity price** in the integration's options (SGD per kWh, incl. GST; SP publishes the regulated tariff quarterly). The integration then writes **SP Group electricity cost** (`sp_group:{premise_id}_electricity_cost`); pick it as the grid source's total-cost statistic. HA cannot derive cost from a fixed price for an external statistic on its own. Clearing the field, or entering zero, removes the option and stops writing the cost series.
 - Do not pick **Electricity cumulative** as the grid source. The recorder compiles that sensor from its state with a sum that starts at zero, which would disagree with the imported AMI sums and show a negative day.
 - Do not add **Electricity last billed**, **Electricity meter**, or **Electricity this month** as grid sources. They are a different number: last billed period, the physical register, and Green Goals month-to-date.
 - Leave Water empty in Energy. SP bills water monthly. **Water** is the sum of billed months; **Water meter** is the lifetime register. Neither is an hourly series.
@@ -177,14 +177,17 @@ uv run python scripts/launch_client.py
 The first five are what CI runs. `scripts/launch_client.py` replays the
 recorded fixtures through the shipped client and needs no credentials.
 
-Optional live call: `SP_USERNAME` and `SP_PASSWORD`.
+Optional live call: `SP_USERNAME` and `SP_PASSWORD`. Both are required; the
+script exits 1 naming the missing one, 2 on rejected credentials, 3 on a usage
+failure, and 0 only when it read the API.
 
 `tests/test_fuzz.py` fuzzes the response parsers: it corrupts one node of a
 recorded fixture per round and asserts that only `UsageError` or `AuthError`
 escapes, that every float reaching a sensor is finite, and that every timestamp
-converts to SGT. The `FUZZ_SEED` constant at the top of that file fixes the
-mutation sequence, so a failure names the seed and round that produced it; paste
-an offending payload into a case in `tests/` to keep it as a regression.
+converts to SGT. The `FUZZ_SEED` constant at the top of that file, overridable
+from the environment, fixes the mutation sequence, so a failure names the seed
+and round that produced it; paste an offending payload into a case in `tests/`
+to keep it as a regression.
 
 ### Modules
 

@@ -21,8 +21,15 @@ def main() -> int:
     username = os.environ.get("SP_USERNAME", "").strip()
     password = os.environ.get("SP_PASSWORD", "")
     if not username or not password:
-        print("SP_USERNAME/SP_PASSWORD not set; skipping live call")
-        return 0
+        missing = [
+            name
+            for name, value in (("SP_USERNAME", username), ("SP_PASSWORD", password))
+            if not value
+        ]
+        # Non-zero: a caller that set the variables expects a live call, and
+        # exit 0 would read as a passing check that never reached the API.
+        print(f"missing environment variables: {', '.join(missing)}", file=sys.stderr)
+        return 1
     client = SpGroupClient()
     try:
         session = client.login(username, password)
@@ -33,10 +40,10 @@ def main() -> int:
         print(f"water_m3={usage.water_m3}")
         return 0
     except AuthError as exc:
-        print(f"auth_error={exc.error}")
+        print(f"auth_error={exc.error}", file=sys.stderr)
         return 2
     except UsageError as exc:
-        print(f"usage_error={exc}")
+        print(f"usage_error={exc}", file=sys.stderr)
         return 3
 
 

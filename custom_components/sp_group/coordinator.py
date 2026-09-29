@@ -28,6 +28,7 @@ from .const import (
     UNIT_KWH,
     UNIT_SGD,
     UPDATE_INTERVAL,
+    parse_electricity_price,
     translated_error,
 )
 from .history import (
@@ -69,11 +70,11 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         """Fixed SGD/kWh price from the entry options, or None when unset."""
         raw = self.entry.options.get(CONF_ELECTRICITY_PRICE)
         try:
-            price = float(raw) if raw is not None else None
-        except (TypeError, ValueError):
+            return parse_electricity_price(raw)
+        except ValueError as exc:
             # Options come from the flow as floats, but .storage can be edited.
+            _LOGGER.warning("%s; no electricity cost series will be written", exc)
             return None
-        return price if price and price > 0 else None
 
     async def async_options_updated(self) -> None:
         """Re-import the cost series when the configured price changed."""

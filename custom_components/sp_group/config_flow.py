@@ -12,7 +12,12 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 
 from .client import AuthError, SpGroupClient, UsageError, session_entry_data
-from .const import CONF_ELECTRICITY_PRICE, CONF_MFA_CODE, DOMAIN
+from .const import (
+    CONF_ELECTRICITY_PRICE,
+    CONF_MFA_CODE,
+    DOMAIN,
+    parse_electricity_price,
+)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -65,8 +70,8 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
-            price = user_input.get(CONF_ELECTRICITY_PRICE)
-            if price:
+            price = parse_electricity_price(user_input.get(CONF_ELECTRICITY_PRICE))
+            if price is not None:
                 options = {**self.config_entry.options, CONF_ELECTRICITY_PRICE: price}
             else:
                 options = dict(self.config_entry.options)

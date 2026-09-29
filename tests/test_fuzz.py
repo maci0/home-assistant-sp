@@ -13,13 +13,15 @@ coordinator relies on:
   fold does.
 
 Mutations are drawn from a seeded ``random.Random``, so a failure reproduces
-from the seed and round printed in the assertion message.
+from the seed and round printed in the assertion message. ``FUZZ_SEED`` in the
+environment picks the seed; without it the recorded default runs.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import random
 from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass
@@ -50,7 +52,8 @@ from custom_components.sp_group.models import SG_TZ
 
 from .conftest import FixtureTransport, load_fixture
 
-FUZZ_SEED = 20240315
+DEFAULT_FUZZ_SEED = 20240315
+FUZZ_SEED = int(os.environ.get("FUZZ_SEED", DEFAULT_FUZZ_SEED))
 STRUCTURE_ROUNDS = 250
 BYTE_ROUNDS = 400
 END_TO_END_ROUNDS = 60

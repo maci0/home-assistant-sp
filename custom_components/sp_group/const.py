@@ -1,5 +1,6 @@
 """SP Group integration constants extracted from APK 15.10.0."""
 
+import math
 from datetime import timedelta
 
 DOMAIN = "sp_group"
@@ -139,6 +140,29 @@ SENSOR_STATE_EBILL = "ebill"
 SENSOR_STATE_PAPER = "paper"
 SENSOR_STATE_ON = "on"
 SENSOR_STATE_OFF = "off"
+
+
+def parse_electricity_price(raw: object) -> float | None:
+    """The configured SGD/kWh price, or None when the option carries no price.
+
+    One rule for both the options flow and the reader: unset, empty, zero, and
+    negative all mean "no price", because the option holds a price and not a
+    switch. Anything else that is not a finite number raises, so a value a user
+    hand-edited into .storage is reported instead of quietly costing nothing.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError(f"{CONF_ELECTRICITY_PRICE} must be a number, got {raw!r}")
+    try:
+        price = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{CONF_ELECTRICITY_PRICE} must be a number, got {raw!r}"
+        ) from exc
+    if not math.isfinite(price):
+        raise ValueError(f"{CONF_ELECTRICITY_PRICE} must be finite, got {raw!r}")
+    return price if price > 0 else None
 
 
 def translated_error(key: str, exc: Exception) -> dict[str, object]:
