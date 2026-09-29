@@ -18,6 +18,9 @@ from custom_components.sp_group.client import (  # noqa: E402
 
 
 def main() -> int:
+    # SP text is UTF-8 and a parse error quotes it back; on a C-locale
+    # terminal the print would raise instead of reporting the failure.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     username = os.environ.get("SP_USERNAME", "").strip()
     password = os.environ.get("SP_PASSWORD", "")
     if not username or not password:

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Protocol
 
+from .const import fold_text
+
 SG_TZ = timezone(timedelta(hours=8))
 
 
@@ -242,13 +244,15 @@ class UsageReadings:
         return self.gas.periods if self.gas else ()
 
     def meter(self, utility: str) -> MeterRegister | None:
+        wanted = fold_text(utility)
         for item in self.meter_registers:
-            if item.utility == utility:
+            if fold_text(item.utility) == wanted:
                 return item
         return None
 
     def goal(self, kind: str) -> GreenGoal | None:
+        wanted = fold_text(kind)
         for item in self.green_goals:
-            if item.kind == kind:
+            if fold_text(item.kind) == wanted:
                 return item
         return None

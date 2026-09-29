@@ -41,6 +41,8 @@ from custom_components.sp_group.const import (
 )
 from custom_components.sp_group.mapper import (
     _currency,
+    _fcu_from_key,
+    _fcu_sensor_key,
     extra_attributes,
     sensors_from_usage,
 )
@@ -293,3 +295,43 @@ def test_amount_due_unit_follows_the_payable_currency() -> None:
     assert _currency("usd") == "USD"
     assert _currency(None) == UNIT_SGD
     assert _currency("S$") == UNIT_SGD
+    # A full-width code is the same code, and a trailing newline is not part
+    # of one: neither may reach Home Assistant as a unit of measurement.
+    assert _currency("ＵＳＤ") == "USD"
+    assert _currency("USD\n") == UNIT_SGD
+
+
+def test_fcu_key_folds_the_two_spellings_of_one_name() -> None:
+    """NFC and NFD spellings of a coil name are one coil, not two entities."""
+    assert _fcu_sensor_key("Café Coil") == _fcu_sensor_key("Café Coil")
+    # A name the safe form can spell keeps the key it always had.
+    assert _fcu_sensor_key("Tengah-001") == "fcu_tengah_001"
+
+
+def test_fcu_keys_stay_distinct_when_characters_are_dropped() -> None:
+    """Two coils whose names differ only in a dropped character stay apart."""
+    assert _fcu_sensor_key("Tengah-001") != _fcu_sensor_key("Tengah–001")
+    assert _fcu_sensor_key("客厅") != _fcu_sensor_key("Kamar")
+
+
+def test_fcu_lookup_returns_the_own_readings_of_each_coil() -> None:
+    usage = fixture_client().fetch_usage()
+
+    def coil(thing_name: str, temperature: float) -> FcuInfo:
+        return FcuInfo(
+            thing_name=thing_name,
+            display_name=None,
+            is_on=True,
+            is_online=True,
+            room_temperature=temperature,
+            setpoint=24.0,
+            mode="cool",
+        )
+
+    cool = coil("Cool–01", 21.5)
+    other = coil("Cool-01", 29.0)
+    two = replace(usage, fcus=(cool, other))
+    by_key = {spec.key: spec for spec in sensors_from_usage(two)}
+    assert by_key[_fcu_sensor_key("Cool–01")].native_value == pytest.approx(21.5)
+    assert by_key[_fcu_sensor_key("Cool-01")].native_value == pytest.approx(29.0)
+    assert _fcu_from_key(two, _fcu_sensor_key("Cool–01")) is cool

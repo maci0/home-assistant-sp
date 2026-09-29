@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 from datetime import datetime
 from urllib.parse import urlparse
@@ -811,3 +812,22 @@ def test_drop_future_removes_padded_days() -> None:
 
 def test_tls_context_is_built_once_per_process() -> None:
     assert _ssl_context() is _ssl_context()
+
+
+def test_charts_with_a_byte_order_mark_and_a_non_breaking_space_unit() -> None:
+    """A BOM must not fail the read, and a U+00A0 inside "kWh" must not either."""
+    payload = json.loads(load_fixture("jarvis_charts.json"))
+    elec = payload["elec"]
+    assert isinstance(elec, dict)
+    for row in elec["data"]:
+        row["unit"] = "k\u00a0Wh"
+    body = codecs.BOM_UTF8 + json.dumps(payload).encode("utf-8")
+    transport = FixtureTransport(
+        responses={f"{JARVIS_CHARTS_PATH}/premise-001": HttpResponse(200, body)}
+    )
+
+    usage = fixture_client(transport).fetch_usage()
+
+    assert usage.electricity is not None
+    assert usage.electricity.unit == "kWh"
+    assert usage.electricity_kwh == pytest.approx(352.456)

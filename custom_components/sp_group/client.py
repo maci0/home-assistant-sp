@@ -74,6 +74,7 @@ from .const import (
     JARVIS_ME_PATH,
     JARVIS_PPMS_PATH,
     JARVIS_SMRD_PATH,
+    JSON_ENCODING,
     NJORD_HISTORY_PATH,
     NJORD_PAYABLES_PATH,
     NOTIFICATIONS_PATH,
@@ -86,6 +87,7 @@ from .const import (
     TYCHE_WALLET_PATH,
     UNIT_KWH,
     USER_AGENT,
+    fold_text,
 )
 from .models import (
     SG_TZ,
@@ -259,7 +261,7 @@ def _session_is_live(session: Session | None, epoch: int) -> TypeGuard[Session]:
 def _decode_json(body: bytes) -> object:
     if not body:
         return {}
-    return json.loads(body.decode("utf-8"))
+    return json.loads(body.decode(JSON_ENCODING))
 
 
 def _require_json(response: HttpResponse, label: str) -> object:
@@ -524,8 +526,18 @@ def _mfa_channel_from_challenge(
 
 
 def _energy_or_volume_unit(unit: str, kind: str) -> str:
-    compact = unit.replace(" ", "").lower()
-    volume = "m³" if compact in {"m3", "m³", "cum", "cu.m", "cbm"} else (unit or "m³")
+    """Canonical unit for a billed series, from the unit SP reported.
+
+    The reported unit is server text, so compare it in the folded form and
+    drop every kind of space, not only U+0020: a non-breaking space inside
+    "kWh" is enough to fail the electricity read otherwise. The unit handed
+    back is folded and stripped too, so no stray space reaches a sensor.
+    """
+    folded = fold_text(unit)
+    compact = "".join(folded.split())
+    volume = (
+        "m³" if compact in {"m3", "cum", "cu.m", "cbm"} else (folded.strip() or "m³")
+    )
     if kind == "elec":
         if unit and compact not in {"kwh", "kw·h"}:
             raise UsageError(f"unexpected electricity unit {unit!r}")

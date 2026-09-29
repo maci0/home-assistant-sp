@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -49,6 +50,7 @@ from .const import (
     UNIT_KWH,
     UNIT_M3,
     UNIT_SGD,
+    fold_text,
 )
 from .history import fold_half_hours, merge_ami_periods, trim_unreported
 from .models import SG_TZ, FcuInfo, PeriodReading, UsageReadings, UtilitySeries
@@ -68,17 +70,35 @@ class SensorSpec:
 
 
 _FCU_KEY_SAFE = re.compile(r"[^0-9A-Za-z]+")
-_ISO_CURRENCY = re.compile(r"^[A-Za-z]{3}$")
+_ISO_CURRENCY = re.compile(r"[A-Za-z]{3}")
+# Length of the digest that keeps two coils apart when their names differ only
+# in characters the safe key form drops.
+_FCU_KEY_DIGEST_CHARS = 8
 
 
 def _currency(code: str | None) -> str:
     """ISO 4217 code the amount is in, so it is not labelled SGD when it is not."""
-    return code.upper() if code and _ISO_CURRENCY.match(code) else UNIT_SGD
+    if not code:
+        return UNIT_SGD
+    folded = fold_text(code)
+    return folded.upper() if _ISO_CURRENCY.fullmatch(folded) else UNIT_SGD
 
 
 def _fcu_sensor_key(thing_name: str) -> str:
-    safe = _FCU_KEY_SAFE.sub("_", thing_name).strip("_").lower()
-    return f"{SENSOR_KEY_FCU}_{safe}" if safe else SENSOR_KEY_FCU
+    """Entity key for one Frosty coil, from its server-supplied thingName.
+
+    The name is folded first, so the NFC and NFD spellings of one name are one
+    coil rather than two entities. A name carrying characters the safe form
+    drops keeps a digest of the folded name: two coils that differ only in
+    those characters would otherwise share one entity and report each other's
+    readings. Names that are already safe keep the key they always had.
+    """
+    folded = fold_text(thing_name)
+    safe = _FCU_KEY_SAFE.sub("_", folded).strip("_")
+    if safe and folded.isascii():
+        return f"{SENSOR_KEY_FCU}_{safe}"
+    digest = hashlib.sha256(folded.encode("utf-8")).hexdigest()[:_FCU_KEY_DIGEST_CHARS]
+    return f"{SENSOR_KEY_FCU}_{safe}_{digest}" if safe else f"{SENSOR_KEY_FCU}_{digest}"
 
 
 def _fcu_from_key(usage: UsageReadings, key: str) -> FcuInfo | None:

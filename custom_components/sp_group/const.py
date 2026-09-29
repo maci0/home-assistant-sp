@@ -1,6 +1,9 @@
 """SP Group integration constants extracted from APK 15.10.0."""
 
+from __future__ import annotations
+
 import math
+import unicodedata
 from datetime import timedelta
 
 DOMAIN = "sp_group"
@@ -97,6 +100,10 @@ CONF_PASSWORD = "password"
 USER_AGENT = "Infinity/15.10.0 (Android)"
 HEADER_ID_TOKEN = "X-id-token"
 CONTENT_TYPE_JSON = "application/json; charset=utf-8"
+# The encoding every SP response body is decoded with. utf-8-sig is utf-8 that
+# also drops a leading byte-order mark, which a .NET gateway in front of an
+# endpoint is free to send and which json.loads rejects.
+JSON_ENCODING = "utf-8-sig"
 ACCEPT_LANGUAGE = "en_US"
 
 HTTP_TIMEOUT_SECONDS = 30
@@ -189,6 +196,16 @@ def parse_electricity_price(raw: object) -> float | None:
     if not math.isfinite(price):
         raise ValueError(f"{CONF_ELECTRICITY_PRICE} must be finite, got {raw!r}")
     return price if price > 0 else None
+
+
+def fold_text(value: str) -> str:
+    """The one comparison form for text that came from outside this source.
+
+    NFKC so the NFC and NFD spellings of an accented name are one value, and
+    compatibility spellings (full-width, superscript) match their plain form;
+    casefold so the match does not depend on case.
+    """
+    return unicodedata.normalize("NFKC", value).casefold()
 
 
 def translated_error(key: str, exc: Exception) -> dict[str, object]:
