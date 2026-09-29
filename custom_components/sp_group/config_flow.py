@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from functools import partial
 from typing import Any
@@ -68,6 +69,32 @@ async def _validate(
     return _entry_data(client, username)
 
 
+def _price_field(value: object) -> float | str:
+    """The options form's price field: a non-negative number, or ``""``.
+
+    The shipped option description tells the user to leave the field empty to
+    disable the cost series, and the form framework submits an untouched
+    optional field as an empty string. Coercing that with ``float()`` raised a
+    form error instead, so the one way the description offers to turn the cost
+    series off was a validation failure. Zero is accepted here and carries no
+    price, as ``parse_electricity_price`` decides for the reader.
+    """
+    if isinstance(value, str):
+        if not value.strip():
+            return ""
+        try:
+            number = float(value.strip())
+        except ValueError as exc:
+            raise vol.Invalid(f"{CONF_ELECTRICITY_PRICE} must be a number") from exc
+    elif isinstance(value, bool) or not isinstance(value, int | float):
+        raise vol.Invalid(f"{CONF_ELECTRICITY_PRICE} must be a number")
+    else:
+        number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise vol.Invalid(f"{CONF_ELECTRICITY_PRICE} must be zero or more")
+    return number
+
+
 def _auth_error_key(exc: AuthError) -> str:
     """The strings.json error key: the Auth0 code, or invalid_auth for the rest."""
     if exc.error in {OAUTH_ERROR_REQUIRES_VERIFICATION, "too_many_attempts"}:
@@ -108,7 +135,7 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_ELECTRICITY_PRICE,
                     description={"suggested_value": current},
-                ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                ): _price_field,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

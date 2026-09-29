@@ -299,6 +299,17 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             )
 
         price = self.electricity_price
+        imported = self._imported_through(usage.premise_id)
+        cost_id = external_statistic_id(
+            usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
+        )
+        if price != self._imported_price:
+            # The cost series is a cumulative product of the price, so a new
+            # price has to reach the points already written. The recorder
+            # overwrites a row it already holds, so dropping the watermark
+            # re-sends the whole series at the new price; keeping it left the
+            # loaded window on the old price and repriced only what came after.
+            imported.pop(cost_id, None)
         for key, periods, unit, unit_class, name in series:
             points = cumulative_points(periods)
             if not points:
@@ -313,9 +324,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             if key == SENSOR_KEY_ELECTRICITY and price is not None:
                 self._add_external_statistics(
                     usage.premise_id,
-                    external_statistic_id(
-                        usage.premise_id, STATISTIC_KEY_ELECTRICITY_COST
-                    ),
+                    cost_id,
                     metadata(
                         STATISTIC_KEY_ELECTRICITY_COST,
                         STATISTIC_NAME_ELECTRICITY_COST,
