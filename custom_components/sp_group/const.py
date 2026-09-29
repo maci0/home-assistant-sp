@@ -133,6 +133,7 @@ STATE_CLASS_MEASUREMENT = "measurement"
 UNIT_KWH = "kWh"
 UNIT_M3 = "m³"
 UNIT_SGD = "SGD"
+UNIT_POINTS = "points"
 UNIT_CELSIUS = "°C"
 ENTITY_CATEGORY_DIAGNOSTIC = "diagnostic"
 
@@ -173,6 +174,9 @@ SENSOR_STATE_EBILL = "ebill"
 SENSOR_STATE_PAPER = "paper"
 SENSOR_STATE_ON = "on"
 SENSOR_STATE_OFF = "off"
+# Stands in for an account or EV status the API left empty. It is a state the
+# integration writes, so it needs a state entry like the others.
+SENSOR_STATE_UNKNOWN = "unknown"
 
 
 def parse_electricity_price(raw: object) -> float | None:

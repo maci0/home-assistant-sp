@@ -20,6 +20,7 @@ from custom_components.sp_group.const import (
     SENSOR_KEY_ELECTRICITY_GOAL,
     SENSOR_KEY_ELECTRICITY_LAST,
     SENSOR_KEY_ELECTRICITY_METER,
+    SENSOR_KEY_EV_SESSION,
     SENSOR_KEY_EV_UNPAID,
     SENSOR_KEY_GAS,
     SENSOR_KEY_LAST_BILL,
@@ -32,6 +33,7 @@ from custom_components.sp_group.const import (
     SENSOR_STATE_OFF,
     SENSOR_STATE_ON,
     SENSOR_STATE_PAPER,
+    SENSOR_STATE_UNKNOWN,
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL,
     STATE_CLASS_TOTAL_INCREASING,
@@ -48,6 +50,7 @@ from custom_components.sp_group.mapper import (
 )
 from custom_components.sp_group.models import (
     BillDeliveryInfo,
+    EvSessionInfo,
     EvUnpaidInfo,
     FcuInfo,
     UsageReadings,
@@ -167,6 +170,23 @@ def test_bill_delivery_state_follows_the_copy_preference(
 
     assert spec.native_value == expected
     assert spec.native_value in {SENSOR_STATE_EBILL, SENSOR_STATE_PAPER}
+
+
+def test_empty_api_status_falls_back_to_the_translated_unknown_state() -> None:
+    """An empty account or EV status writes a shipped state, not a raw literal."""
+    usage = _usage_with()
+    usage = replace(
+        usage,
+        premise=replace(usage.premise, account_status=None),
+        ev_session=EvSessionInfo(
+            status=None, kwh=1.0, total_cost=None, start=None, order_id=None
+        ),
+    )
+
+    by_key = {item.key: item for item in sensors_from_usage(usage)}
+
+    assert by_key[SENSOR_KEY_ACCOUNT].native_value == SENSOR_STATE_UNKNOWN
+    assert by_key[SENSOR_KEY_EV_SESSION].native_value == SENSOR_STATE_UNKNOWN
 
 
 def test_amount_due_carries_the_payable_currency() -> None:

@@ -43,12 +43,14 @@ from .const import (
     SENSOR_STATE_OFF,
     SENSOR_STATE_ON,
     SENSOR_STATE_PAPER,
+    SENSOR_STATE_UNKNOWN,
     STATE_CLASS_MEASUREMENT,
     STATE_CLASS_TOTAL,
     STATE_CLASS_TOTAL_INCREASING,
     UNIT_CELSIUS,
     UNIT_KWH,
     UNIT_M3,
+    UNIT_POINTS,
     UNIT_SGD,
     fold_text,
 )
@@ -414,7 +416,7 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
         SensorSpec(
             key=SENSOR_KEY_ACCOUNT,
             translation_key=SENSOR_KEY_ACCOUNT,
-            native_value=usage.premise.account_status or "unknown",
+            native_value=usage.premise.account_status or SENSOR_STATE_UNKNOWN,
             device_class=None,
             state_class=None,
             unit_of_measurement=None,
@@ -521,7 +523,7 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 native_value=usage.greenup.points,
                 device_class=None,
                 state_class=None,
-                unit_of_measurement="points",
+                unit_of_measurement=UNIT_POINTS,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
                 suggested_display_precision=0,
             )
@@ -534,7 +536,7 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
                 native_value=usage.ev_wallet.points,
                 device_class=None,
                 state_class=None,
-                unit_of_measurement="points",
+                unit_of_measurement=UNIT_POINTS,
                 suggested_display_precision=0,
             )
         )
@@ -543,7 +545,7 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
             SensorSpec(
                 key=SENSOR_KEY_EV_SESSION,
                 translation_key=SENSOR_KEY_EV_SESSION,
-                native_value=usage.ev_session.status or "unknown",
+                native_value=usage.ev_session.status or SENSOR_STATE_UNKNOWN,
                 device_class=None,
                 state_class=None,
                 unit_of_measurement=None,

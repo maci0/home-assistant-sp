@@ -30,6 +30,57 @@ def _sensor_states() -> set[str]:
     }
 
 
+def _sensor_units() -> set[str]:
+    return {value for name, value in vars(const).items() if name.startswith("UNIT_")}
+
+
+def _spec_calls(tree: ast.AST) -> list[ast.Call]:
+    """Every SensorSpec construction in the mapper, read from the AST.
+
+    Walking the AST keeps the check off comments and string content, and
+    covers every call site, including ones a grep for a single literal misses.
+    """
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "SensorSpec"
+    ]
+
+
+def _spec_string_literals(calls: list[ast.Call], field: str) -> list[str]:
+    values: list[str] = []
+    for call in calls:
+        for keyword in call.keywords:
+            if keyword.arg != field:
+                continue
+            value = keyword.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                values.append(value.value)
+    return values
+
+
+MAPPER = ast.parse((PACKAGE / "mapper.py").read_text(encoding="utf-8"))
+SPEC_CALLS = _spec_calls(MAPPER)
+
+
+def test_the_mapper_walk_covers_every_spec_construction() -> None:
+    """Guard the guard: an empty walk would pass the literal checks vacuously."""
+    assert len(SPEC_CALLS) >= 10
+
+
+def test_every_spec_state_literal_is_a_declared_constant() -> None:
+    """A state written as a literal ships untranslated, so it needs a constant."""
+    states = _spec_string_literals(SPEC_CALLS, "native_value")
+    assert set(states) <= _sensor_states()
+
+
+def test_every_spec_unit_literal_is_a_declared_constant() -> None:
+    units = _spec_string_literals(SPEC_CALLS, "unit_of_measurement")
+    assert set(units) <= _sensor_units()
+
+
 def test_every_sensor_key_has_a_translated_name() -> None:
     assert _sensor_keys() <= SENSORS.keys()
     assert all(entry["name"] for entry in SENSORS.values())
