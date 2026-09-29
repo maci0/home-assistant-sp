@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import json
+import ssl
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from io import BytesIO
 from ssl import SSLError
 from urllib.error import HTTPError, URLError
@@ -276,7 +278,6 @@ def test_concurrent_fetches_spend_the_refresh_token_once() -> None:
             access_token="expired-access-token",
             id_token="expired-id-token",
             refresh_token="starting-refresh-token",
-            scope=None,
             expires_at=0,
         ),
     )
@@ -336,3 +337,49 @@ def test_loggable_url_keeps_the_fixed_route() -> None:
         f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
     )
     assert _loggable_url(f"{PUBLIC_HOST}/") == PUBLIC_HOST
+
+
+def test_urllib_transport_builds_one_tls_context() -> None:
+    """Each new context re-reads the CA bundle, once per request otherwise."""
+    built: list[ssl.SSLContext] = []
+    real = ssl.create_default_context
+
+    def _counting() -> ssl.SSLContext:
+        context = real()
+        built.append(context)
+        return context
+
+    responses = iter([b"{}", b"{}"])
+
+    def _ok(*args: object, **kwargs: object) -> _Response:
+        return _Response(next(responses))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(client_module, "urlopen", _ok)
+        patch.setattr(client_module, "_ssl_context", _cached(_counting))
+        transport = UrllibTransport()
+        transport.request("GET", "https://example.invalid/a", {}, None)
+        transport.request("GET", "https://example.invalid/b", {}, None)
+
+    assert len(built) == 1, "the second request rebuilt the CA context"
+
+
+class _Response:
+    """The minimal urlopen result: a status and a readable body."""
+
+    def __init__(self, body: bytes) -> None:
+        self.status = 200
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def _cached(factory: Callable[[], ssl.SSLContext]) -> Callable[[], ssl.SSLContext]:
+    return functools.lru_cache(maxsize=None)(factory)

@@ -1,16 +1,26 @@
-"""Deterministic perf gate for the sensor-spec cache.
+"""Deterministic perf gates for the poll and the sensor-spec cache.
 
 Every entity reads the spec list on each coordinator update, and the list walks
 the whole AMI window. The gate asserts work (how often the specs are built) and
-CPU time, never wall clock, so a loaded runner cannot make it flap.
+CPU time, never wall clock, so a loaded runner cannot make it flap. The poll
+gate asserts overlap, not duration, for the same reason.
 """
 
 from __future__ import annotations
 
+import threading
 import time
+from collections.abc import Mapping
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 from custom_components.sp_group import mapper
+from custom_components.sp_group.client import HttpResponse
+from custom_components.sp_group.const import (
+    B2C_HOST,
+    JARVIS_AMI_PATH,
+    JARVIS_SMRD_PATH,
+)
 from custom_components.sp_group.mapper import SensorSpecCache
 from custom_components.sp_group.models import (
     SG_TZ,
@@ -19,6 +29,8 @@ from custom_components.sp_group.models import (
     UsageReadings,
     UtilitySeries,
 )
+
+from .conftest import FixtureTransport, fixture_client
 
 ENTITIES = 26
 ROUNDS = 10
@@ -105,3 +117,49 @@ def test_cached_reads_cost_far_less_cpu_than_rebuilds() -> None:
 
     assert rebuilt > 0
     assert cached * 5 < rebuilt
+
+
+# The three reads that follow the charts call. None of them needs another's
+# answer, so the poll issues them together. The barrier is the assertion: both
+# must be in flight at once, and a barrier that times out raises rather than
+# hanging, so a regression to serial reads fails the test instead of stalling
+# the suite. The metered read stands in for the whole first fan-out; the AMI
+# pair is two requests of one unit, so only the first of them is gated.
+CONCURRENT_PATHS = (JARVIS_SMRD_PATH, JARVIS_AMI_PATH)
+BARRIER_TIMEOUT_SECONDS = 10
+
+
+class _OverlappingTransport(FixtureTransport):
+    barrier: threading.Barrier
+    gated: int
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        *,
+        timeout: int | None = None,
+    ) -> HttpResponse:
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if (
+            origin == B2C_HOST
+            and parsed.path.startswith(CONCURRENT_PATHS)
+            and self.gated < len(CONCURRENT_PATHS)
+        ):
+            self.gated += 1
+            self.barrier.wait(timeout=BARRIER_TIMEOUT_SECONDS)
+        return super().request(method, url, headers, body, timeout=timeout)
+
+
+def test_poll_reads_independent_hosts_at_the_same_time() -> None:
+    transport = _OverlappingTransport()
+    transport.barrier = threading.Barrier(len(CONCURRENT_PATHS))
+    transport.gated = 0
+
+    usage = fixture_client(transport).fetch_usage()
+
+    assert usage.premise_id
+    assert transport.gated == len(CONCURRENT_PATHS)

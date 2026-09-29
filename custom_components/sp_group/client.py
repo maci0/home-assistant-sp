@@ -19,7 +19,9 @@ import logging
 import math
 import ssl
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from functools import cache
@@ -125,6 +127,27 @@ TENGAH_PAIRED_FCUS_QUERY = (
     "getPairedFCUs(utilityAccountNumber: $utilityAccountNumber)"
     "{ displayName thingName } }"
 )
+
+# Independent reads of one poll run at most this wide. The widest fan-out is
+# the optional block, which is seven reads, so this is the whole cap.
+POLL_FANOUT_WORKERS = 8
+
+
+@contextmanager
+def _poll_pool(width: int) -> Iterator[ThreadPoolExecutor]:
+    """A pool sized to one poll's fan-out, joined before the poll returns.
+
+    A poll is roughly twenty sequential HTTPS calls spread over five hosts, and
+    almost none of them depend on each other's answer. Run one after another
+    the poll costs the sum of every connection setup and round trip; run
+    together it costs the slowest single read. The poll already runs on an
+    executor thread, so this bounds extra threads to one poll's worth.
+    """
+    with ThreadPoolExecutor(
+        max_workers=min(max(width, 1), POLL_FANOUT_WORKERS),
+        thread_name_prefix="sp_group_poll",
+    ) as pool:
+        yield pool
 
 
 class AuthError(Exception):
@@ -1423,9 +1446,13 @@ class SpGroupClient:
         electricity = _parse_utility(charts.get("elec"), "elec")
         water = _parse_utility(charts.get("water"), "water")
         gas = _parse_utility(charts.get("gas"), "gas")
-        meter_reading, meter_registers = self._fetch_meter_reading(session, info.id)
-        ppms_credit = self._fetch_ppms(session, info)
-        ami_hourly, ami_daily = self._fetch_ami(session, info)
+        with _poll_pool(3) as pool:
+            meter_future = pool.submit(self._fetch_meter_reading, session, info.id)
+            ppms_future = pool.submit(self._fetch_ppms, session, info)
+            ami_future = pool.submit(self._fetch_ami, session, info)
+            meter_reading, meter_registers = meter_future.result()
+            ppms_credit = ppms_future.result()
+            ami_hourly, ami_daily = ami_future.result()
         if (
             electricity is None
             and water is None
@@ -1438,11 +1465,18 @@ class SpGroupClient:
             )
         if electricity is None and water is None and gas is None:
             raise UsageError("no billed utilities")
-        bills = self._fetch_bills(session, info.account_number)
+        with _poll_pool(4) as pool:
+            bills_future = pool.submit(self._fetch_bills, session, info.account_number)
+            due_future = pool.submit(self._fetch_amount_due, session, info)
+            goals_future = pool.submit(self._fetch_green_goals, session, info.id)
+            optional_future = pool.submit(
+                self._fetch_optional, session, info, electricity
+            )
+            bills = bills_future.result()
+            amount_due = due_future.result()
+            green_goals = goals_future.result()
+            extras = optional_future.result()
         last_bill = bills[-1] if bills else None
-        amount_due = self._fetch_amount_due(session, info)
-        green_goals = self._fetch_green_goals(session, info.id)
-        extras = self._fetch_optional(session, info, electricity)
         base = UsageReadings(
             premise=info,
             electricity=electricity,
@@ -1483,37 +1517,61 @@ class SpGroupClient:
         premise: PremiseInfo,
         electricity: UtilitySeries | None,
     ) -> OptionalReads:
-        greenup = _parse_greenup(
+        with _poll_pool(7) as pool:
+            greenup_future = pool.submit(self._fetch_greenup, session)
+            wallet_future = pool.submit(self._fetch_ev_wallet, session)
+            unread_future = pool.submit(self._fetch_unread, session)
+            delivery_future = pool.submit(
+                self._fetch_bill_delivery, session, premise.account_number
+            )
+            eva_future = pool.submit(self._fetch_eva, session)
+            fcus_future = pool.submit(self._fetch_fcus, session, premise.account_number)
+            tariff_future = pool.submit(self._fetch_tariff, electricity)
+            greenup = greenup_future.result()
+            wallet = wallet_future.result()
+            unread = unread_future.result()
+            delivery = delivery_future.result()
+            eva = eva_future.result()
+            fcus = fcus_future.result()
+            tariff = tariff_future.result()
+        ev_session, ev_last_charge, ev_unpaid = eva
+        return OptionalReads(
+            greenup=greenup,
+            ev_wallet=wallet,
+            ev_session=ev_session,
+            ev_last_charge=ev_last_charge,
+            ev_unpaid=ev_unpaid,
+            unread_notifications=unread,
+            bill_delivery=delivery,
+            fcus=fcus,
+            tariff=tariff,
+        )
+
+    def _fetch_greenup(self, session: Session) -> GreenUpInfo | None:
+        return _parse_greenup(
             self._optional_post(
                 session, GREENUP_GRAPHQL_PATH, {"query": GREENUP_ACCOUNT_QUERY}
             )
         )
-        ev_wallet = _parse_ev_wallet(self._optional_get(session, TYCHE_WALLET_PATH))
-        ev_session, ev_last_charge, ev_unpaid = self._fetch_eva(session)
-        unread_path = f"{NOTIFICATIONS_PATH}?" + urlencode(
+
+    def _fetch_ev_wallet(self, session: Session) -> EvWalletInfo | None:
+        return _parse_ev_wallet(self._optional_get(session, TYCHE_WALLET_PATH))
+
+    def _fetch_unread(self, session: Session) -> int | None:
+        path = f"{NOTIFICATIONS_PATH}?" + urlencode(
             {
                 "limit": "1",
                 "include_totals_unread_notifications": "true",
                 "include_notifications": "false",
             }
         )
-        unread = _parse_unread(self._optional_get(session, unread_path))
-        bill_delivery = _parse_bill_delivery(
-            self._optional_get(session, BILL_PREFERENCES_PATH),
-            premise.account_number,
-        )
-        fcus = self._fetch_fcus(session, premise.account_number)
-        tariff = self._fetch_tariff(electricity)
-        return OptionalReads(
-            greenup=greenup,
-            ev_wallet=ev_wallet,
-            ev_session=ev_session,
-            ev_last_charge=ev_last_charge,
-            ev_unpaid=ev_unpaid,
-            unread_notifications=unread,
-            bill_delivery=bill_delivery,
-            fcus=fcus,
-            tariff=tariff,
+        return _parse_unread(self._optional_get(session, path))
+
+    def _fetch_bill_delivery(
+        self, session: Session, account_number: str | None
+    ) -> BillDeliveryInfo | None:
+        return _parse_bill_delivery(
+            self._optional_get(session, BILL_PREFERENCES_PATH), account_number
         )
 
     def _fetch_eva(
@@ -1531,8 +1589,9 @@ class SpGroupClient:
         ev_session = _parse_ev_session(_optional_json(response))
         history_qs = urlencode({"offSet": "0", "pageSize": "5"})
         history_path = f"{EVA_CHARGE_HISTORY_PATH}?{history_qs}"
-        history_body = self._optional_get(session, history_path)
-        ev_last_charge = _parse_ev_last_charge(history_body)
+        ev_last_charge = _parse_ev_last_charge(
+            self._optional_get(session, history_path)
+        )
         ev_unpaid = _parse_ev_unpaid(self._optional_get(session, EVA_UNPAID_PATH))
         return ev_session, ev_last_charge, ev_unpaid
 
@@ -1552,14 +1611,23 @@ class SpGroupClient:
         paired = _parse_paired_fcus(body)
         if not paired:
             return ()
-        out: list[FcuInfo] = []
-        for thing, display in paired:
-            query = urlencode({"thingName": thing, "utility_acc_id": account_number})
-            status = self._optional_get(session, f"{FROSTY_FCU_STATUS_PATH}?{query}")
-            info = _parse_fcu_status(status, thing, display)
-            if info is not None:
-                out.append(info)
+        with _poll_pool(len(paired)) as pool:
+            futures = [
+                pool.submit(self._fcu_status, session, thing, account_number)
+                for thing, _ in paired
+            ]
+            out: list[FcuInfo] = []
+            for (thing, display), future in zip(paired, futures, strict=True):
+                info = _parse_fcu_status(future.result(), thing, display)
+                if info is not None:
+                    out.append(info)
         return tuple(out)
+
+    def _fcu_status(
+        self, session: Session, thing: str, account_number: str | None
+    ) -> object | None:
+        query = urlencode({"thingName": thing, "utility_acc_id": account_number})
+        return self._optional_get(session, f"{FROSTY_FCU_STATUS_PATH}?{query}")
 
     def _fetch_tariff(self, electricity: UtilitySeries | None) -> TariffInfo | None:
         query = urlencode({"consumption": _tariff_consumption(electricity)})
