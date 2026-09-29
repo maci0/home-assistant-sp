@@ -135,6 +135,30 @@ def test_absent_optional_read_is_not_logged(caplog: pytest.LogCaptureFixture) ->
     assert caplog.text == ""
 
 
+def test_a_failed_optional_read_logs_no_forged_log_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The error text on a failed read is host text; it must not reach the log raw.
+
+    An upstream can put a newline in its own message, and a log viewer would
+    read what follows as a record of its own.
+    """
+    hostile = "token expired\n2026-01-01 WARNING ev refused the connection"
+    transport = FixtureTransport(
+        responses={
+            TYCHE_WALLET_PATH: HttpResponse(
+                500, json.dumps({"error_description": hostile}).encode()
+            )
+        }
+    )
+    with caplog.at_level("WARNING"):
+        usage = fixture_client(transport).fetch_usage()
+
+    assert usage.ev_wallet is None
+    assert "ev refused the connection" in caplog.text
+    assert "token expired\n" not in caplog.text
+
+
 def test_identity_host_outage_is_not_reported_as_bad_credentials() -> None:
     """A 5xx from Auth0 must not push Home Assistant into a reauth flow."""
     client = SpGroupClient(
@@ -507,6 +531,25 @@ def test_urllib_transport_refuses_an_oversized_body() -> None:
         with pytest.raises(TransportError) as raised:
             UrllibTransport().request("POST", url, {}, b"{}")
     assert str(MAX_RESPONSE_BYTES) in str(raised.value)
+    # A poll makes twenty reads; the cap alone does not say which one refused.
+    assert OAUTH_TOKEN_PATH in str(raised.value)
+
+
+def test_an_oversized_error_body_names_the_read() -> None:
+    """The refusal must survive the HTTPError branch, which is a different read."""
+    url = f"{IDENTITY_HOST}{OAUTH_TOKEN_PATH}"
+
+    def _raising(*args: object, **kwargs: object) -> object:
+        raise HTTPError(
+            url, 502, "bad gateway", Message(), BytesIO(b"x" * (MAX_RESPONSE_BYTES + 1))
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(client_module, "urlopen", _raising)
+        with pytest.raises(TransportError) as raised:
+            UrllibTransport().request("POST", url, {}, b"{}")
+    assert "POST" in str(raised.value)
+    assert OAUTH_TOKEN_PATH in str(raised.value)
 
 
 def test_urllib_transport_reads_a_body_at_the_cap() -> None:

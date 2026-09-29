@@ -6,6 +6,8 @@ import json
 from collections.abc import Mapping
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from custom_components.sp_group.client import (
     HttpResponse,
     _eva_sgd,
@@ -166,6 +168,27 @@ def test_eva_scope_not_found_skips_remaining_eva() -> None:
     assert [path for path in eva_paths if path.startswith("/eva/")] == [
         EVA_LATEST_SESSION_PATH
     ]
+
+
+def test_a_denied_eva_scope_is_reported_at_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 403 on the grant is not the expected "not signed up" case.
+
+    Filed with the other 4xx it reads as a steady state, and the three Eva
+    sensors stay unset with nothing in a normal log saying why.
+    """
+    transport = FixtureTransport(
+        responses={
+            EVA_LATEST_SESSION_PATH: HttpResponse(403, b'{"error":"scope_not_found"}')
+        }
+    )
+    with caplog.at_level("WARNING"):
+        usage = fixture_client(transport).fetch_usage()
+
+    assert usage.ev_session is None
+    assert "403" in caplog.text
+    assert EVA_LATEST_SESSION_PATH in caplog.text
 
 
 def test_optional_calls_use_short_timeout() -> None:

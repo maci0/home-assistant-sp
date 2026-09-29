@@ -286,17 +286,22 @@ class BodyReader(Protocol):
     def read(self, amount: int, /) -> bytes: ...
 
 
-def _read_bounded(response: BodyReader) -> bytes:
+def _read_bounded(response: BodyReader, label: str) -> bytes:
     """The body, refused past MAX_RESPONSE_BYTES.
 
     A hostile or misconfigured upstream can stream an unbounded body; the
     read would grow the Home Assistant process until it is swapped out or
     killed, taking every other integration with it. One byte over the cap is
     enough to tell an oversized body from a large legitimate one.
+
+    ``label`` names the read, because a poll makes twenty of them and the cap
+    alone says nothing about which one was refused.
     """
     body = response.read(MAX_RESPONSE_BYTES + 1)
     if len(body) > MAX_RESPONSE_BYTES:
-        raise TransportError(f"response body over {MAX_RESPONSE_BYTES} bytes refused")
+        raise TransportError(
+            f"{label} response body over {MAX_RESPONSE_BYTES} bytes refused"
+        )
     return body
 
 
@@ -315,14 +320,17 @@ class UrllibTransport:
         request = Request(url, data=body, method=method, headers=dict(headers))  # noqa: S310
         seconds = HTTP_TIMEOUT_SECONDS if timeout is None else timeout
         started = time.monotonic()
+        label = _read_label(method, url)
         try:
             with urlopen(request, timeout=seconds, context=_ssl_context()) as response:  # noqa: S310
                 http = HttpResponse(
-                    status=int(response.status), body=_read_bounded(response)
+                    status=int(response.status), body=_read_bounded(response, label)
                 )
         except HTTPError as exc:
             with exc:
-                http = HttpResponse(status=int(exc.code), body=_read_bounded(exc))
+                http = HttpResponse(
+                    status=int(exc.code), body=_read_bounded(exc, label)
+                )
         except (OSError, HTTPException) as exc:
             # URLError, socket timeout, and TLS failures all land here. Name the
             # call and the timeout so the log says which host stalled the poll.
@@ -395,7 +403,9 @@ def _server_message(response: HttpResponse) -> str:
     """Whatever the host said went wrong, quoted short and redacted.
 
     Error text reaches the Home Assistant log, so it is truncated: a hostile or
-    broken gateway can put a megabyte in the body.
+    broken gateway can put a megabyte in the body. It is cleaned for the same
+    reason: the body is host text, and a newline or an escape sequence in it
+    would forge log lines or reformat the log viewer around them.
     """
     try:
         decoded = _decode_json(response.body)
@@ -409,7 +419,7 @@ def _server_message(response: HttpResponse) -> str:
         or decoded.get("message")
         or ""
     )
-    return f": {message[:ERROR_VALUE_CHARS]}" if message else ""
+    return f": {_safe_text(message)}" if message else ""
 
 
 def _optional_json(response: HttpResponse, label: str) -> object | None:
@@ -433,7 +443,9 @@ def _optional_json(response: HttpResponse, label: str) -> object | None:
     try:
         return _decode_json(response.body)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        _LOGGER.warning("%s returned a body that is not JSON: %s", label, exc)
+        _LOGGER.warning(
+            "%s returned a body that is not JSON: %s", label, _safe_text(exc)
+        )
         return None
 
 
@@ -1834,7 +1846,18 @@ class SpGroupClient:
             None,
             OPTIONAL_HTTP_TIMEOUT_SECONDS,
         )
-        if response is None or _eva_scope_denied(response):
+        if response is None:
+            return None, None, None
+        if _eva_scope_denied(response):
+            # A 403 the host attributes to the grant, not to an enrollment. The
+            # generic optional-read line files it as the expected "not signed up"
+            # case, which hides the one thing worth acting on: a token that will
+            # never carry these reads until it is re-issued with the scope.
+            _LOGGER.warning(
+                "optional read %s returned HTTP 403: the session's grant does not "
+                "cover Eva, so the Eva sensors stay unset",
+                EVA_LATEST_SESSION_PATH,
+            )
             return None, None, None
         ev_session = _parse_ev_session(
             _optional_json(response, _read_label("GET", eva_url))

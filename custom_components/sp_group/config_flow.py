@@ -199,9 +199,9 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
                     context[CONF_PASSWORD],
                     exchange,
                 )
-            except AuthError as exc:
-                _report_failure("MFA code exchange", exc, errors)
-            except (UsageError, OSError) as exc:
+            except (AuthError, UsageError, OSError) as exc:
+                # _report_failure picks the form key off the type, so the arms
+                # do not need splitting here.
                 _report_failure("MFA code exchange", exc, errors)
             else:
                 entry = context["entry"]
