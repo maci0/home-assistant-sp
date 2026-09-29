@@ -987,6 +987,40 @@ def _parse_green_goals(body: object, premise_id: str) -> tuple[GreenGoal, ...]:
     return tuple(goals)
 
 
+def _graphql_error(body: object) -> str:
+    """The messages in a GraphQL errors array, or "" when the query carried none.
+
+    GraphQL reports a refused or broken query inside a 200 response, so the
+    status check in _optional_json never sees it. The two GraphQL hosts are the
+    only reads that can answer 200 and still have failed, and without this a
+    query the server rejects drops the sensors it feeds with nothing in the log,
+    which reads as "not enrolled" rather than as a failure.
+    """
+    if not isinstance(body, dict):
+        return ""
+    rows = body.get("errors")
+    if not isinstance(rows, list) or not rows:
+        return ""
+    return "; ".join(
+        message
+        for row in rows
+        if isinstance(row, dict)
+        if (message := _safe_text(row.get("message")))
+    )
+
+
+def _log_graphql_errors(path: str, body: object) -> None:
+    """Warn about a GraphQL read that answered 200 with errors in the envelope.
+
+    A warning, not a debug line, for the same reason the optional-read 4xx
+    split exists: the read feeds entities, so a server-side rejection takes
+    them away and only the log says so.
+    """
+    detail = _graphql_error(body)
+    if detail:
+        _LOGGER.warning("%s returned GraphQL errors: %s", path, detail)
+
+
 def _graphql_data(body: object) -> dict[str, object] | None:
     if not isinstance(body, dict):
         return None
@@ -1857,11 +1891,11 @@ class SpGroupClient:
         )
 
     def _fetch_greenup(self, session: Session) -> GreenUpInfo | None:
-        return _parse_greenup(
-            self._optional_post(
-                session, GREENUP_GRAPHQL_PATH, {"query": GREENUP_ACCOUNT_QUERY}
-            )
+        body = self._optional_post(
+            session, GREENUP_GRAPHQL_PATH, {"query": GREENUP_ACCOUNT_QUERY}
         )
+        _log_graphql_errors(GREENUP_GRAPHQL_PATH, body)
+        return _parse_greenup(body)
 
     def _fetch_ev_wallet(self, session: Session) -> EvWalletInfo | None:
         return _parse_ev_wallet(self._optional_get(session, TYCHE_WALLET_PATH))
@@ -1931,6 +1965,7 @@ class SpGroupClient:
                 "variables": {"utilityAccountNumber": account_number},
             },
         )
+        _log_graphql_errors(FROSTY_GRAPHQL_PATH, body)
         paired = _parse_paired_fcus(body)
         if not paired:
             return ()

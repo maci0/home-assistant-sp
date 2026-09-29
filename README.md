@@ -123,8 +123,9 @@ A failed or empty `/jarvis/v3/me` or `/jarvis/v4/charts` aborts the poll. Steps
 feeds, so a missing entity means that one read returned nothing, not that the
 whole update failed. A skipped read that came back with a status other than 404
 is logged with the route and the status, so a sensor that never appears leaves
-a log line naming the call that failed. An empty 200 says nothing and is not
-logged.
+a log line naming the call that failed. The two GraphQL reads answer 200 even
+when the query is refused, so their `errors` array is logged the same way; a
+rejected query is not silent. An empty 200 says nothing and is not logged.
 
 Then optional reads (8s HTTP timeout each). 4xx or empty payloads skip the matching sensor:
 

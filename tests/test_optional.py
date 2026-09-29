@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from urllib.parse import parse_qs, urlparse
 
@@ -11,6 +12,7 @@ import pytest
 from custom_components.sp_group.client import (
     HttpResponse,
     _eva_sgd,
+    _graphql_error,
     _parse_bill_delivery,
     _parse_ev_last_charge,
     _parse_ev_session,
@@ -392,3 +394,42 @@ def test_a_long_paired_fcu_list_is_read_up_to_the_cap() -> None:
     usage = fixture_client(ManyFcus()).fetch_usage()
     assert len(usage.fcus) == MAX_FCU_STATUS_READS
     assert ManyFcus.status_reads == MAX_FCU_STATUS_READS
+
+
+def test_graphql_error_messages_are_readable() -> None:
+    assert _graphql_error({"errors": [{"message": "Unauthorized"}]}) == "Unauthorized"
+    assert (
+        _graphql_error({"errors": [{"message": "one"}, {"message": "two"}]})
+        == "one; two"
+    )
+    assert _graphql_error({"data": {"account": None}}) == ""
+    assert _graphql_error({"errors": []}) == ""
+    assert _graphql_error({"errors": "Unauthorized"}) == ""
+    assert _graphql_error(None) == ""
+
+
+def test_a_graphql_read_that_answers_200_with_errors_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """GraphQL fails inside a 200, so only the errors array reports the failure.
+
+    Unlogged, a query the server refuses drops the sensors it feeds and reads as
+    "not enrolled" rather than as a failure.
+    """
+    transport = FixtureTransport(
+        responses={
+            "/1up/authenticated/graphql": HttpResponse(
+                200,
+                json.dumps(
+                    {"data": None, "errors": [{"message": "Unauthorized"}]}
+                ).encode(),
+            )
+        }
+    )
+    client = fixture_client(transport)
+    session = client.session
+    assert session is not None
+    with caplog.at_level(logging.WARNING):
+        greenup = client._fetch_greenup(session)
+    assert greenup is None
+    assert "Unauthorized" in caplog.text
