@@ -34,8 +34,13 @@ def _sensor_units() -> set[str]:
     return {value for name, value in vars(const).items() if name.startswith("UNIT_")}
 
 
+# The mapper builds a spec either directly or through its _spec helper, which
+# takes the value positionally and names the unit argument ``unit``.
+_SPEC_FACTORIES = {"SensorSpec": "native_value", "_spec": "unit_of_measurement"}
+
+
 def _spec_calls(tree: ast.AST) -> list[ast.Call]:
-    """Every SensorSpec construction in the mapper, read from the AST.
+    """Every spec construction in the mapper, read from the AST.
 
     Walking the AST keeps the check off comments and string content, and
     covers every call site, including ones a grep for a single literal misses.
@@ -45,19 +50,30 @@ def _spec_calls(tree: ast.AST) -> list[ast.Call]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "SensorSpec"
+        and node.func.id in _SPEC_FACTORIES
     ]
+
+
+def _field_literals(call: ast.Call, field: str) -> list[ast.expr]:
+    """The arguments a spec call passes for one ``SensorSpec`` field."""
+    assert isinstance(call.func, ast.Name)
+    if call.func.id == "_spec":
+        if field == "native_value" and len(call.args) > 1:
+            return [call.args[1]]
+        if field == "unit_of_measurement":
+            return [kw.value for kw in call.keywords if kw.arg == "unit"]
+        return []
+    return [kw.value for kw in call.keywords if kw.arg == field]
 
 
 def _spec_string_literals(calls: list[ast.Call], field: str) -> list[str]:
     values: list[str] = []
     for call in calls:
-        for keyword in call.keywords:
-            if keyword.arg != field:
-                continue
-            value = keyword.value
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                values.append(value.value)
+        values.extend(
+            value.value
+            for value in _field_literals(call, field)
+            if isinstance(value, ast.Constant) and isinstance(value.value, str)
+        )
     return values
 
 

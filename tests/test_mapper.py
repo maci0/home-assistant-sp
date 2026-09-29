@@ -43,6 +43,7 @@ from custom_components.sp_group.const import (
     UNIT_SGD,
 )
 from custom_components.sp_group.mapper import (
+    SensorSpec,
     _currency,
     _fcu_from_key,
     _fcu_sensor_key,
@@ -70,6 +71,11 @@ from .conftest import (
 def _usage_with(**overrides: Any) -> UsageReadings:
     """A real fixture poll with the named fields swapped, for optional branches."""
     return replace(fixture_client().fetch_usage(), **overrides)
+
+
+def _by_key(usage: UsageReadings) -> dict[str, SensorSpec]:
+    """The poll's sensors keyed by sensor key, read at the fixed instant."""
+    return {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
 
 
 def test_sensors_match_energy_dashboard_contract() -> None:
@@ -169,9 +175,7 @@ def test_bill_delivery_state_follows_the_copy_preference(
         bill_delivery=BillDeliveryInfo(soft_copy=soft_copy, hard_copy=hard_copy)
     )
 
-    spec = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}[
-        SENSOR_KEY_BILL_DELIVERY
-    ]
+    spec = _by_key(usage)[SENSOR_KEY_BILL_DELIVERY]
 
     assert spec.native_value == expected
     assert spec.native_value in {SENSOR_STATE_EBILL, SENSOR_STATE_PAPER}
@@ -188,7 +192,7 @@ def test_empty_api_status_falls_back_to_the_translated_unknown_state() -> None:
         ),
     )
 
-    by_key = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
+    by_key = _by_key(usage)
 
     assert by_key[SENSOR_KEY_ACCOUNT].native_value == SENSOR_STATE_UNKNOWN
     assert by_key[SENSOR_KEY_EV_SESSION].native_value == SENSOR_STATE_UNKNOWN
@@ -201,8 +205,7 @@ def test_amount_due_carries_the_payable_currency() -> None:
     due = replace(usage.amount_due, currency="usd")
     usage = replace(usage, amount_due=due)
 
-    by_key = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
-    spec = by_key[SENSOR_KEY_AMOUNT_DUE]
+    spec = _by_key(usage)[SENSOR_KEY_AMOUNT_DUE]
 
     assert spec.native_value == pytest.approx(203.69)
     assert spec.unit_of_measurement == "USD"
@@ -224,8 +227,7 @@ def test_ev_unpaid_falls_back_to_the_order_count(
 ) -> None:
     usage = _usage_with(ev_unpaid=unpaid)
 
-    by_key = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
-    spec = by_key[SENSOR_KEY_EV_UNPAID]
+    spec = _by_key(usage)[SENSOR_KEY_EV_UNPAID]
 
     assert spec.native_value == expected_value
     assert spec.unit_of_measurement == expected_unit
@@ -254,7 +256,7 @@ def test_fcu_without_a_temperature_reports_on_and_off(
         )
     )
 
-    specs = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
+    specs = _by_key(usage)
 
     assert "fcu_tengah_living_1" in specs
     spec = specs["fcu_tengah_living_1"]
@@ -276,7 +278,7 @@ def test_last_period_sensor_is_empty_when_the_utility_has_no_periods() -> None:
         electricity=replace(usage.electricity, periods=()),
     )
 
-    specs = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
+    specs = _by_key(usage)
 
     assert specs[SENSOR_KEY_ELECTRICITY_LAST].native_value is None
     assert specs[SENSOR_KEY_ELECTRICITY_LAST].state_class == STATE_CLASS_MEASUREMENT
@@ -289,8 +291,7 @@ def test_ppms_credit_sensor_appears_only_when_enrolled() -> None:
         item.key for item in sensors_from_usage(_usage_with(), FIXED_NOW)
     }
 
-    by_key = {item.key: item for item in sensors_from_usage(usage, FIXED_NOW)}
-    spec = by_key[SENSOR_KEY_PPMS]
+    spec = _by_key(usage)[SENSOR_KEY_PPMS]
 
     assert spec.native_value == pytest.approx(42.5)
     assert spec.device_class == DEVICE_CLASS_MONETARY
@@ -361,7 +362,7 @@ def test_fcu_lookup_returns_the_own_readings_of_each_coil() -> None:
     cool = coil("Cool–01", 21.5)
     other = coil("Cool-01", 29.0)
     two = replace(usage, fcus=(cool, other))
-    by_key = {spec.key: spec for spec in sensors_from_usage(two, FIXED_NOW)}
+    by_key = _by_key(two)
     assert by_key[_fcu_sensor_key("Cool–01")].native_value == pytest.approx(21.5)
     assert by_key[_fcu_sensor_key("Cool-01")].native_value == pytest.approx(29.0)
     assert _fcu_from_key(two, _fcu_sensor_key("Cool–01")) is cool

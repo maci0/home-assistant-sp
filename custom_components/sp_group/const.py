@@ -134,6 +134,12 @@ EVA_INTEGER_CENTS_MIN = 100
 MAX_MONEY = Decimal("1e12")
 MONEY_PRECISION = 20
 
+# How SP spells the electricity utility in each payload. The SMRD registers say
+# "electric" and Green Goals say "elec"; both lookups fold before comparing, so
+# these are the wire spellings, not two names for one thing.
+METER_UTILITY_ELECTRICITY = "electric"
+GOAL_KIND_ELECTRICITY = "elec"
+
 # How much of an offending value a parse error quotes back, so a hostile
 # response cannot push a megabyte of text into the log.
 ERROR_VALUE_CHARS = 60

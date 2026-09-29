@@ -76,6 +76,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
         self._imported_premise: str | None = None
         self._imported_points: dict[str, datetime] = {}
         self._spec_cache = SensorSpecCache()
+        self._now = self.client.clock.now()
 
     @property
     def sensor_specs(self) -> tuple[SensorSpec, ...]:
@@ -84,8 +85,13 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
 
     @property
     def now(self) -> datetime:
-        """The clock reading the poll ran at, shared by specs and attributes."""
-        return self.client.clock.now()
+        """The clock reading the poll ran at, shared by specs and attributes.
+
+        Read once per poll and held until the next one lands, so the specs the
+        cache freezes and the attributes every entity asks for describe the same
+        instant. A poll that fails leaves both describing the poll before it.
+        """
+        return self._now
 
     def extra_attributes(self, key: str) -> dict[str, object]:
         usage = self.data
@@ -144,6 +150,7 @@ class SpGroupCoordinator(DataUpdateCoordinator[UsageReadings]):
             round((time.monotonic() - started) * 1000),
         )
         self._persist_session_if_changed()
+        self._now = self.client.clock.now()
         self._schedule_stats_import()
         return usage
 

@@ -14,6 +14,8 @@ from .const import (
     DEVICE_CLASS_TEMPERATURE,
     DEVICE_CLASS_WATER,
     ENTITY_CATEGORY_DIAGNOSTIC,
+    GOAL_KIND_ELECTRICITY,
+    METER_UTILITY_ELECTRICITY,
     SENSOR_KEY_ACCOUNT,
     SENSOR_KEY_AMOUNT_DUE,
     SENSOR_KEY_BILL_DELIVERY,
@@ -147,8 +149,14 @@ def _today_kwh(usage: UsageReadings, now: datetime) -> float | None:
     if not slots:
         return None
     today = now.astimezone(SG_TZ).date()
-    return sum(
-        item.amount for item in slots if item.start.astimezone(SG_TZ).date() == today
+    # float() because sum() of an empty day is an int 0, and the sensor state
+    # must not change type between a day with slots and one without.
+    return float(
+        sum(
+            item.amount
+            for item in slots
+            if item.start.astimezone(SG_TZ).date() == today
+        )
     )
 
 
@@ -218,14 +226,18 @@ def extra_attributes(
         return _omit_none(attrs)
     if key in {SENSOR_KEY_ELECTRICITY_METER, SENSOR_KEY_WATER_METER}:
         meter = usage.meter(
-            "electric" if key == SENSOR_KEY_ELECTRICITY_METER else "water"
+            METER_UTILITY_ELECTRICITY
+            if key == SENSOR_KEY_ELECTRICITY_METER
+            else "water"
         )
         if meter is not None:
             attrs["meter_id"] = meter.meter_id
             attrs["last_actual_at"] = meter.last_actual_at
         return _omit_none(attrs)
     if key in {SENSOR_KEY_ELECTRICITY_GOAL, SENSOR_KEY_WATER_GOAL}:
-        goal = usage.goal("elec" if key == SENSOR_KEY_ELECTRICITY_GOAL else "water")
+        goal = usage.goal(
+            GOAL_KIND_ELECTRICITY if key == SENSOR_KEY_ELECTRICITY_GOAL else "water"
+        )
         if goal is not None:
             attrs["goal_month"] = goal.month
             attrs["goal_target"] = goal.target
@@ -349,6 +361,30 @@ def _last_spec(key: str, series: UtilitySeries, precision: int) -> SensorSpec:
     )
 
 
+def _spec(
+    key: str,
+    value: float | str,
+    *,
+    device_class: str | None = None,
+    state_class: str | None = None,
+    unit: str | None = None,
+    entity_category: str | None = None,
+    precision: int | None = None,
+    name: str | None = None,
+) -> SensorSpec:
+    """One sensor spec; the key doubles as its translation key."""
+    return SensorSpec(
+        key=key,
+        native_value=value,
+        device_class=device_class,
+        state_class=state_class,
+        unit_of_measurement=unit,
+        entity_category=entity_category,
+        suggested_display_precision=precision,
+        name=name,
+    )
+
+
 def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[SensorSpec]:
     """Return energy/water/gas sensors plus account diagnostics.
 
@@ -364,275 +400,243 @@ def sensors_from_usage(usage: UsageReadings | None, now: datetime) -> list[Senso
             sum(item.amount for item in graph) if graph else usage.electricity.total
         )
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_ELECTRICITY,
-                native_value=elec_total,
+            _spec(
+                SENSOR_KEY_ELECTRICITY,
+                elec_total,
                 device_class=DEVICE_CLASS_ENERGY,
                 state_class=STATE_CLASS_TOTAL_INCREASING,
-                unit_of_measurement=UNIT_KWH,
-                suggested_display_precision=1,
+                unit=UNIT_KWH,
+                precision=1,
             )
         )
         specs.append(_last_spec(SENSOR_KEY_ELECTRICITY_LAST, usage.electricity, 1))
         today = _today_kwh(usage, now)
         if today is not None:
             specs.append(
-                SensorSpec(
-                    key=SENSOR_KEY_ELECTRICITY_TODAY,
-                    native_value=today,
-                    device_class=None,
+                _spec(
+                    SENSOR_KEY_ELECTRICITY_TODAY,
+                    today,
                     state_class=STATE_CLASS_MEASUREMENT,
-                    unit_of_measurement=UNIT_KWH,
-                    suggested_display_precision=2,
+                    unit=UNIT_KWH,
+                    precision=2,
                 )
             )
         last_slot = _last_interval(usage)
         if last_slot is not None:
             specs.append(
-                SensorSpec(
-                    key=SENSOR_KEY_ELECTRICITY_HOUR,
-                    native_value=last_slot.amount,
-                    device_class=None,
+                _spec(
+                    SENSOR_KEY_ELECTRICITY_HOUR,
+                    last_slot.amount,
                     state_class=STATE_CLASS_MEASUREMENT,
-                    unit_of_measurement=UNIT_KWH,
-                    suggested_display_precision=2,
+                    unit=UNIT_KWH,
+                    precision=2,
                 )
             )
     if usage.water is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_WATER,
-                native_value=usage.water.total,
+            _spec(
+                SENSOR_KEY_WATER,
+                usage.water.total,
                 device_class=DEVICE_CLASS_WATER,
-                state_class=None,
-                unit_of_measurement=UNIT_M3,
-                suggested_display_precision=2,
+                unit=UNIT_M3,
+                precision=2,
             )
         )
         specs.append(_last_spec(SENSOR_KEY_WATER_LAST, usage.water, 2))
     if usage.gas is not None:
         is_kwh = usage.gas.unit == UNIT_KWH
-        gas_class = DEVICE_CLASS_ENERGY if is_kwh else DEVICE_CLASS_GAS
-        precision = 1 if is_kwh else 2
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_GAS,
-                native_value=usage.gas.total,
-                device_class=gas_class,
+            _spec(
+                SENSOR_KEY_GAS,
+                usage.gas.total,
+                device_class=DEVICE_CLASS_ENERGY if is_kwh else DEVICE_CLASS_GAS,
                 state_class=STATE_CLASS_TOTAL_INCREASING,
-                unit_of_measurement=usage.gas.unit,
-                suggested_display_precision=precision,
+                unit=usage.gas.unit,
+                precision=1 if is_kwh else 2,
             )
         )
-        specs.append(_last_spec(SENSOR_KEY_GAS_LAST, usage.gas, precision))
+        specs.append(_last_spec(SENSOR_KEY_GAS_LAST, usage.gas, 1 if is_kwh else 2))
     specs.append(
-        SensorSpec(
-            key=SENSOR_KEY_ACCOUNT,
-            native_value=usage.premise.account_status or SENSOR_STATE_UNKNOWN,
-            device_class=None,
-            state_class=None,
-            unit_of_measurement=None,
+        _spec(
+            SENSOR_KEY_ACCOUNT,
+            usage.premise.account_status or SENSOR_STATE_UNKNOWN,
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )
     )
     if usage.ppms_credit is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_PPMS,
-                native_value=usage.ppms_credit,
+            _spec(
+                SENSOR_KEY_PPMS,
+                usage.ppms_credit,
                 device_class=DEVICE_CLASS_MONETARY,
-                state_class=None,
-                unit_of_measurement=UNIT_SGD,
+                unit=UNIT_SGD,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-                suggested_display_precision=2,
+                precision=2,
             )
         )
     if usage.last_bill is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_LAST_BILL,
-                native_value=usage.last_bill.amount_sgd,
+            _spec(
+                SENSOR_KEY_LAST_BILL,
+                usage.last_bill.amount_sgd,
                 device_class=DEVICE_CLASS_MONETARY,
                 state_class=STATE_CLASS_TOTAL,
-                unit_of_measurement=UNIT_SGD,
-                suggested_display_precision=2,
+                unit=UNIT_SGD,
+                precision=2,
             )
         )
     if usage.amount_due is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_AMOUNT_DUE,
-                native_value=usage.amount_due.amount_sgd,
+            _spec(
+                SENSOR_KEY_AMOUNT_DUE,
+                usage.amount_due.amount_sgd,
                 device_class=DEVICE_CLASS_MONETARY,
-                state_class=None,
-                unit_of_measurement=_currency(usage.amount_due.currency),
-                suggested_display_precision=2,
+                unit=_currency(usage.amount_due.currency),
+                precision=2,
             )
         )
-    elec_meter = usage.meter("electric")
+    elec_meter = usage.meter(METER_UTILITY_ELECTRICITY)
     if elec_meter is not None:
+        # total, not total_increasing: a register is a running lifetime total,
+        # and total_increasing would turn a downward SP correction into a meter
+        # reset that zeroes the statistics.
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_ELECTRICITY_METER,
-                native_value=elec_meter.value,
+            _spec(
+                SENSOR_KEY_ELECTRICITY_METER,
+                elec_meter.value,
                 device_class=DEVICE_CLASS_ENERGY,
-                # total, not total_increasing: a register is a running lifetime
-                # total, and total_increasing would turn a downward SP
-                # correction into a meter reset that zeroes the statistics.
                 state_class=STATE_CLASS_TOTAL,
-                unit_of_measurement=UNIT_KWH,
-                suggested_display_precision=0,
+                unit=UNIT_KWH,
+                precision=0,
             )
         )
     water_meter = usage.meter("water")
     if water_meter is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_WATER_METER,
-                native_value=water_meter.value,
+            _spec(
+                SENSOR_KEY_WATER_METER,
+                water_meter.value,
                 device_class=DEVICE_CLASS_WATER,
                 state_class=STATE_CLASS_TOTAL,
-                unit_of_measurement=UNIT_M3,
-                suggested_display_precision=1,
+                unit=UNIT_M3,
+                precision=1,
             )
         )
-    elec_goal = usage.goal("elec")
+    elec_goal = usage.goal(GOAL_KIND_ELECTRICITY)
     if elec_goal is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_ELECTRICITY_GOAL,
-                native_value=elec_goal.used,
-                device_class=None,
+            _spec(
+                SENSOR_KEY_ELECTRICITY_GOAL,
+                elec_goal.used,
                 state_class=STATE_CLASS_MEASUREMENT,
-                unit_of_measurement=UNIT_KWH,
-                suggested_display_precision=1,
+                unit=UNIT_KWH,
+                precision=1,
             )
         )
     water_goal = usage.goal("water")
     if water_goal is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_WATER_GOAL,
-                native_value=water_goal.used,
-                device_class=None,
+            _spec(
+                SENSOR_KEY_WATER_GOAL,
+                water_goal.used,
                 state_class=STATE_CLASS_MEASUREMENT,
-                unit_of_measurement=UNIT_M3,
-                suggested_display_precision=2,
+                unit=UNIT_M3,
+                precision=2,
             )
         )
     if usage.greenup is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_GREENUP_POINTS,
-                native_value=usage.greenup.points,
-                device_class=None,
-                state_class=None,
-                unit_of_measurement=UNIT_POINTS,
+            _spec(
+                SENSOR_KEY_GREENUP_POINTS,
+                usage.greenup.points,
+                unit=UNIT_POINTS,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-                suggested_display_precision=0,
+                precision=0,
             )
         )
     if usage.ev_wallet is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_EV_WALLET,
-                native_value=usage.ev_wallet.points,
-                device_class=None,
-                state_class=None,
-                unit_of_measurement=UNIT_POINTS,
-                suggested_display_precision=0,
+            _spec(
+                SENSOR_KEY_EV_WALLET,
+                usage.ev_wallet.points,
+                unit=UNIT_POINTS,
+                precision=0,
             )
         )
     if usage.ev_session is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_EV_SESSION,
-                native_value=usage.ev_session.status or SENSOR_STATE_UNKNOWN,
-                device_class=None,
-                state_class=None,
-                unit_of_measurement=None,
+            _spec(
+                SENSOR_KEY_EV_SESSION,
+                usage.ev_session.status or SENSOR_STATE_UNKNOWN,
             )
         )
     if usage.ev_last_charge is not None and usage.ev_last_charge.kwh is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_EV_LAST_CHARGE,
-                native_value=usage.ev_last_charge.kwh,
+            _spec(
+                SENSOR_KEY_EV_LAST_CHARGE,
+                usage.ev_last_charge.kwh,
                 device_class=DEVICE_CLASS_ENERGY,
-                state_class=None,
-                unit_of_measurement=UNIT_KWH,
-                suggested_display_precision=2,
+                unit=UNIT_KWH,
+                precision=2,
             )
         )
-    unpaid = usage.ev_unpaid
-    if unpaid is not None:
-        # An unpaid-orders list with no amount reports the order count instead.
-        priced = unpaid.amount is not None
+    if usage.ev_unpaid is not None:
+        # The unpaid order total when Eva reports one, the order count otherwise.
+        amount = usage.ev_unpaid.amount
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_EV_UNPAID,
-                native_value=unpaid.amount if priced else unpaid.count,
-                device_class=DEVICE_CLASS_MONETARY if priced else None,
-                state_class=None,
-                unit_of_measurement=UNIT_SGD if priced else None,
-                suggested_display_precision=2,
+            _spec(
+                SENSOR_KEY_EV_UNPAID,
+                amount if amount is not None else usage.ev_unpaid.count,
+                device_class=DEVICE_CLASS_MONETARY if amount is not None else None,
+                unit=UNIT_SGD if amount is not None else None,
+                precision=2,
             )
         )
     if usage.unread_notifications is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_UNREAD_NOTIFICATIONS,
-                native_value=usage.unread_notifications,
-                device_class=None,
-                state_class=None,
-                unit_of_measurement=None,
+            _spec(
+                SENSOR_KEY_UNREAD_NOTIFICATIONS,
+                usage.unread_notifications,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             )
         )
     if usage.bill_delivery is not None:
-        delivery = (
-            SENSOR_STATE_EBILL if usage.bill_delivery.soft_copy else SENSOR_STATE_PAPER
-        )
-        hard = usage.bill_delivery.hard_copy is True
-        if usage.bill_delivery.soft_copy is None and hard:
-            delivery = SENSOR_STATE_PAPER
+        # An unknown soft-copy preference reads as no e-bill, so an account that
+        # also has hard copy enabled shows as paper, the state it is really in.
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_BILL_DELIVERY,
-                native_value=delivery,
-                device_class=None,
-                state_class=None,
-                unit_of_measurement=None,
+            _spec(
+                SENSOR_KEY_BILL_DELIVERY,
+                SENSOR_STATE_EBILL
+                if usage.bill_delivery.soft_copy
+                else SENSOR_STATE_PAPER,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             )
         )
     for fcu in usage.fcus:
-        has_temp = fcu.room_temperature is not None
+        temperature = fcu.room_temperature
+        has_temp = temperature is not None
         specs.append(
-            SensorSpec(
-                key=_fcu_sensor_key(fcu.thing_name),
-                native_value=(
-                    fcu.room_temperature
-                    if has_temp
-                    else (SENSOR_STATE_ON if fcu.is_on else SENSOR_STATE_OFF)
-                ),
+            _spec(
+                _fcu_sensor_key(fcu.thing_name),
+                temperature
+                if temperature is not None
+                else (SENSOR_STATE_ON if fcu.is_on else SENSOR_STATE_OFF),
                 device_class=DEVICE_CLASS_TEMPERATURE if has_temp else None,
                 state_class=STATE_CLASS_MEASUREMENT if has_temp else None,
-                unit_of_measurement=UNIT_CELSIUS if has_temp else None,
-                suggested_display_precision=1,
+                unit=UNIT_CELSIUS if has_temp else None,
+                precision=1,
                 name=fcu.display_name or fcu.thing_name,
             )
         )
     if usage.tariff is not None and usage.tariff.kwh_price is not None:
         specs.append(
-            SensorSpec(
-                key=SENSOR_KEY_TARIFF,
-                native_value=usage.tariff.kwh_price,
+            _spec(
+                SENSOR_KEY_TARIFF,
+                usage.tariff.kwh_price,
                 device_class=DEVICE_CLASS_MONETARY,
-                state_class=None,
-                unit_of_measurement=UNIT_SGD,
+                unit=UNIT_SGD,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
-                suggested_display_precision=4,
+                precision=4,
             )
         )
     return specs

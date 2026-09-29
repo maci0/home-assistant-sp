@@ -23,7 +23,7 @@ import time
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from functools import cache
@@ -1041,23 +1041,22 @@ def _parse_ev_unpaid(body: object) -> EvUnpaidInfo | None:
         return None
     data = body.get("data")
     payload = data if isinstance(data, dict) else body
-    rows = payload.get("orders") if isinstance(payload, dict) else None
+    rows = payload.get("orders")
     if not isinstance(rows, list) or not rows:
+        return None
+    orders = [row for row in rows if isinstance(row, dict)]
+    if not orders:
         return None
     # Added in cents, not as binary floats: 12.30 + 7.35 is 19.649999999999999
     # in float, and the sensor then reports a total no bill ever matched.
     total_cents = 0
     found = False
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    for row in orders:
         amount = _eva_sgd(row.get("amount"))
         if amount is not None:
             total_cents += round(amount * 100)
             found = True
-    return EvUnpaidInfo(
-        count=len(rows), amount=total_cents / 100 if found else None
-    )
+    return EvUnpaidInfo(count=len(orders), amount=total_cents / 100 if found else None)
 
 
 def _parse_unread(body: object) -> int | None:
@@ -1705,7 +1704,7 @@ class SpGroupClient:
             green_goals = goals_future.result()
             extras = optional_future.result()
         last_bill = bills[-1] if bills else None
-        base = UsageReadings(
+        return UsageReadings(
             premise=info,
             electricity=electricity,
             water=water,
@@ -1720,9 +1719,16 @@ class SpGroupClient:
             amount_due=amount_due,
             meter_registers=meter_registers,
             green_goals=green_goals,
+            greenup=extras.greenup,
+            ev_wallet=extras.ev_wallet,
+            ev_session=extras.ev_session,
+            ev_last_charge=extras.ev_last_charge,
+            ev_unpaid=extras.ev_unpaid,
+            unread_notifications=extras.unread_notifications,
+            bill_delivery=extras.bill_delivery,
+            fcus=extras.fcus,
+            tariff=extras.tariff,
         )
-        # OptionalReads names the same fields, so copy them without restating.
-        return replace(base, **vars(extras))
 
     def _fetch_meter_reading(
         self, session: Session, premise_id: str

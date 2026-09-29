@@ -95,11 +95,15 @@ def test_today_kwh_sums_the_slots_of_the_clocks_day() -> None:
 
     def today_kwh(now: FixedClock) -> float | str | None:
         specs = sensors_from_usage(usage, now.now())
-        return next(
-            spec.native_value
-            for spec in specs
-            if spec.key == SENSOR_KEY_ELECTRICITY_TODAY
+        value = next(
+            (
+                spec.native_value
+                for spec in specs
+                if spec.key == SENSOR_KEY_ELECTRICITY_TODAY
+            ),
+            None,
         )
+        return value if isinstance(value, float) else None
 
     assert on_the_clock_day > 0
     assert today_kwh(FixedClock()) == on_the_clock_day
