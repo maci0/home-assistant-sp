@@ -18,6 +18,7 @@ from .const import (
     CONF_ELECTRICITY_PRICE,
     CONF_MFA_CODE,
     DOMAIN,
+    MAX_USERNAME_OCTETS,
     OAUTH_ERROR_MFA_REQUIRED,
     OAUTH_ERROR_REQUIRES_VERIFICATION,
     fold_text,
@@ -32,8 +33,36 @@ MAX_PASSWORD_CHARS = 1024
 
 _PASSWORD_VALIDATOR = vol.All(str, vol.Length(min=1, max=MAX_PASSWORD_CHARS))
 
+
+class _SerializableLength(vol.Length):
+    """A Length bound that also runs a rule function on the value.
+
+    Home Assistant serializes a form's schema for the frontend, with
+    voluptuous-serialize or, from 2026.9, probatio's to_field_list. Both raise
+    on a bare function, so a form whose schema held one failed to load with
+    HTTP 500. Both render a Length as a length-bounded field, so the rule runs
+    here instead, and a ValueError it raises comes back as an error on the
+    field.
+    """
+
+    def __init__(self, rule: Callable[[str], object], **bounds: int) -> None:
+        super().__init__(**bounds)
+        self._rule = rule
+
+    def __call__(self, value: str) -> object:
+        checked = super().__call__(value)
+        try:
+            return self._rule(checked)
+        except ValueError as exc:
+            raise vol.Invalid(str(exc)) from exc
+
+
+_USERNAME_VALIDATOR = vol.All(
+    str, _SerializableLength(validate_username, min=1, max=MAX_USERNAME_OCTETS)
+)
+
 _CREDENTIALS = {
-    vol.Required(CONF_USERNAME): vol.All(str, validate_username),
+    vol.Required(CONF_USERNAME): _USERNAME_VALIDATOR,
     vol.Required(CONF_PASSWORD): _PASSWORD_VALIDATOR,
 }
 
@@ -148,12 +177,14 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
                 }
             return self.async_create_entry(title="", data=options)
         current = self.config_entry.options.get(CONF_ELECTRICITY_PRICE)
+        # Coerce rather than a str check: the frontend sends an untouched field
+        # back as its suggested value, which is the stored number, not text.
         schema = vol.Schema(
             {
                 vol.Optional(
                     CONF_ELECTRICITY_PRICE,
                     description={"suggested_value": current},
-                ): _price_field,
+                ): vol.All(vol.Coerce(str), _SerializableLength(_price_field)),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
@@ -340,7 +371,7 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
                     vol.Required(
                         CONF_USERNAME,
                         default=entry.data.get(CONF_USERNAME, ""),
-                    ): vol.All(str, validate_username),
+                    ): _USERNAME_VALIDATOR,
                 }
             ),
             errors=errors,
