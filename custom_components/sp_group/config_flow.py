@@ -24,6 +24,7 @@ from .const import (
     parse_electricity_price_input,
     validate_username,
 )
+from .form_fields import ValidatedTextSelector
 
 # The password bound only stops a pasted blob from being sent as a request
 # body, so it stays a count of code points; the username is bounded in UTF-8
@@ -33,7 +34,7 @@ MAX_PASSWORD_CHARS = 1024
 _PASSWORD_VALIDATOR = vol.All(str, vol.Length(min=1, max=MAX_PASSWORD_CHARS))
 
 _CREDENTIALS = {
-    vol.Required(CONF_USERNAME): vol.All(str, validate_username),
+    vol.Required(CONF_USERNAME): ValidatedTextSelector(vol.All(str, validate_username)),
     vol.Required(CONF_PASSWORD): _PASSWORD_VALIDATOR,
 }
 
@@ -152,8 +153,10 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Optional(
                     CONF_ELECTRICITY_PRICE,
-                    description={"suggested_value": current},
-                ): _price_field,
+                    description={
+                        "suggested_value": str(current) if current is not None else ""
+                    },
+                ): ValidatedTextSelector(_price_field),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
@@ -340,7 +343,7 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
                     vol.Required(
                         CONF_USERNAME,
                         default=entry.data.get(CONF_USERNAME, ""),
-                    ): vol.All(str, validate_username),
+                    ): ValidatedTextSelector(vol.All(str, validate_username)),
                 }
             ),
             errors=errors,
