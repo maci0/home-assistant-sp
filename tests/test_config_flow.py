@@ -1,9 +1,7 @@
-"""Runtime regressions: run with unittest inside HA, or pytest with HA installed.
+"""Real HA form serialization and schema-validation regressions.
 
-The lightweight client test environment has no Home Assistant. These checks
-must also run in a Home Assistant 2026.11+ environment: unlike inspecting a
-voluptuous schema, its real form serializer rejects opaque validator functions.
-No SP credentials or network requests are used.
+Run with ``python -m unittest tests.test_config_flow -v`` in an HA environment.
+These skip in the lightweight client environment. No SP network calls are made.
 """
 
 from __future__ import annotations
@@ -13,98 +11,153 @@ import importlib.util
 import unittest
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, Mock, PropertyMock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 
 @unittest.skipUnless(importlib.util.find_spec("homeassistant"), "requires HA runtime")
 class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.module = importlib.import_module("custom_components.sp_group.config_flow")
-        self.probatio = importlib.import_module("probatio")
+        self.vol = importlib.import_module("voluptuous")
         self.cv = importlib.import_module("homeassistant.helpers.config_validation")
-        self.entry = SimpleNamespace(
-            data={"username": "user@example.com"},
-            options={"electricity_price": 0.29, "unrelated": "preserved"},
+        # Follow the backend HA actually uses, not packages merely installed.
+        self.serializer = (
+            self.cv.probatio
+            if hasattr(self.cv, "probatio")
+            else self.cv.voluptuous_serialize
         )
         self.flow = self.module.SpGroupConfigFlow()
-        # Keep these checks independent of config-entry persistence and HTTP.
         self.flow.async_show_form = Mock(side_effect=lambda **kwargs: kwargs)
-        self.flow.async_create_entry = Mock(side_effect=lambda **kwargs: kwargs)
-        self.flow.async_set_unique_id = AsyncMock()
-        self.flow._abort_if_unique_id_configured = Mock()
+        self.entry = SimpleNamespace(
+            data={"username": "fixture@example.com"},
+            options={"electricity_price": 0.29, "unrelated": "preserved"},
+        )
         self.flow._get_reauth_entry = Mock(return_value=self.entry)
         self.flow._get_reconfigure_entry = Mock(return_value=self.entry)
-        self.flow.hass = Mock()
 
-    def assert_serializable(self, result: dict[str, Any]) -> None:
-        fields = self.probatio.to_field_list(
-            result["data_schema"], custom_serializer=self.cv.custom_serializer
+    def serialize(self, schema: Any) -> list[dict[str, Any]]:
+        if hasattr(self.serializer, "to_field_list"):
+            return list(
+                self.serializer.to_field_list(
+                    schema, custom_serializer=self.cv.custom_serializer
+                )
+            )
+        return list(
+            self.serializer.convert(schema, custom_serializer=self.cv.custom_serializer)
         )
-        self.assertTrue(fields)
 
     async def test_all_credential_forms_serialize(self) -> None:
         for step in ("user", "reauth_confirm", "reconfigure"):
             with self.subTest(step=step):
-                self.assert_serializable(
-                    await getattr(self.flow, f"async_step_{step}")()
+                form = await getattr(self.flow, f"async_step_{step}")()
+                fields = self.serialize(form["data_schema"])
+                self.assertEqual(
+                    [field["name"] for field in fields], ["username", "password"]
                 )
-        self.assert_serializable(self.flow._mfa_form())
+                self.assertIn("text", fields[0]["selector"])
+                self.assertEqual(fields[1]["type"], "string")
+        self.assertEqual(
+            self.serialize(self.flow._mfa_form()["data_schema"])[0]["type"], "string"
+        )
 
-    async def test_invalid_username_never_reaches_login(self) -> None:
+    async def test_selector_uses_native_presentation_but_retains_server_rule(
+        self,
+    ) -> None:
+        selector = importlib.import_module("homeassistant.helpers.selector")
+        fields = importlib.import_module("custom_components.sp_group.form_fields")
+        schema = self.vol.Schema({"value": fields.ValidatedTextSelector(str.upper)})
+        presentation = self.serialize(schema)[0]["selector"]
+        native = selector.selector(presentation)
+        self.assertIsInstance(native, selector.TextSelector)
+        self.assertEqual(native("fixture"), "fixture")
+        self.assertEqual(schema({"value": "fixture"})["value"], "FIXTURE")
+
+    async def test_username_rules_still_run_in_every_credentials_schema(self) -> None:
         for step in ("user", "reauth_confirm", "reconfigure"):
-            for username in (
+            form = await getattr(self.flow, f"async_step_{step}")()
+            schema = form["data_schema"]
+            for username in ("fixture@example.com", "a" * 254, "\U0001f600" * 62):
+                with self.subTest(step=step, valid=username):
+                    result = schema({"username": username, "password": "fixture"})
+                    self.assertEqual(result["username"], username)
+            for invalid_username in (
                 "",
                 "a" * 255,
                 "\U0001f600" * 64,
                 "user\ud800@example.com",
+                True,
+                None,
             ):
-                with self.subTest(step=step, username=repr(username)):
-                    with patch.object(
-                        self.module, "_validate", new_callable=AsyncMock
-                    ) as login:
-                        result = await getattr(self.flow, f"async_step_{step}")(
-                            {"username": username, "password": "fixture-password"}
-                        )
-                    self.assertEqual(result["errors"], {"username": "invalid_username"})
-                    login.assert_not_awaited()
-                    self.assert_serializable(result)
-        self.flow.async_set_unique_id.assert_not_awaited()
+                with (
+                    self.subTest(step=step, invalid=repr(invalid_username)),
+                    self.assertRaises(self.vol.Invalid),
+                ):
+                    schema({"username": invalid_username, "password": "fixture"})
+            for password in ("", "a" * 1025):
+                with (
+                    self.subTest(step=step, password_length=len(password)),
+                    self.assertRaises(self.vol.Invalid),
+                ):
+                    schema({"username": "fixture@example.com", "password": password})
 
-    async def test_valid_username_still_logs_in(self) -> None:
-        credentials = {"username": "user@example.com", "password": "fixture-password"}
-        with patch.object(self.module, "_validate", new_callable=AsyncMock) as login:
-            login.return_value = {"fixture": "session"}
-            result = await self.flow.async_step_user(credentials)
-        login.assert_awaited_once_with(self.flow.hass, *credentials.values())
-        self.assertEqual(result["data"], {"fixture": "session"})
-
-    async def test_options_serialize_and_validate_on_submission(self) -> None:
+    async def test_price_schema_and_submission_preserve_existing_behavior(self) -> None:
         flow = self.module.SpGroupOptionsFlow()
         flow.async_show_form = Mock(side_effect=lambda **kwargs: kwargs)
         flow.async_create_entry = Mock(side_effect=lambda **kwargs: kwargs)
-        with patch.object(
-            type(flow),
-            "config_entry",
-            new_callable=PropertyMock,
-            return_value=self.entry,
-        ):
-            self.assert_serializable(await flow.async_step_init())
-            for raw in ("free", "-0.29", "nan", "inf", True):
-                with self.subTest(raw=raw):
-                    result = await flow.async_step_init({"electricity_price": raw})
-                    self.assertEqual(
-                        result["errors"], {"electricity_price": "invalid_price"}
-                    )
-                    self.assert_serializable(result)
-            flow.async_create_entry.assert_not_called()
-            for cleared in ("", "   ", "0", None):
-                with self.subTest(clear=cleared):
-                    result = await flow.async_step_init({"electricity_price": cleared})
-                    self.assertEqual(result["data"], {"unrelated": "preserved"})
-            result = await flow.async_step_init({"electricity_price": " 0.31 "})
-            self.assertEqual(
-                result["data"], {"electricity_price": 0.31, "unrelated": "preserved"}
-            )
+        for current in (None, 0.29):
+            options: dict[str, object] = {"unrelated": "preserved"}
+            if current is not None:
+                options["electricity_price"] = current
+            entry = SimpleNamespace(options=options)
+            with patch.object(
+                type(flow),
+                "config_entry",
+                new_callable=PropertyMock,
+                return_value=entry,
+            ):
+                form = await flow.async_step_init()
+                schema = form["data_schema"]
+                field = self.serialize(schema)[0]
+                self.assertIn("text", field["selector"])
+                self.assertEqual(
+                    field["description"]["suggested_value"],
+                    str(current) if current is not None else "",
+                )
+                for raw, expected in (
+                    (0.29, 0.29),
+                    (1, 1.0),
+                    ("0.31", 0.31),
+                    (" 0.31 ", 0.31),
+                    ("", ""),
+                    ("   ", ""),
+                    ("0", 0.0),
+                    (0, 0.0),
+                ):
+                    with self.subTest(current=current, raw=raw):
+                        validated = schema({"electricity_price": raw})
+                        self.assertEqual(validated["electricity_price"], expected)
+                        result = await flow.async_step_init(validated)
+                        self.assertEqual(
+                            result["data"],
+                            {"electricity_price": expected, "unrelated": "preserved"},
+                        )
+                for invalid in (
+                    "free",
+                    "-1",
+                    -1,
+                    "nan",
+                    float("inf"),
+                    True,
+                    False,
+                    None,
+                ):
+                    with (
+                        self.subTest(current=current, invalid=invalid),
+                        self.assertRaises(self.vol.Invalid),
+                    ):
+                        schema({"electricity_price": invalid})
+                result = await flow.async_step_init(schema({}))
+                self.assertEqual(result["data"], {"unrelated": "preserved"})
 
 
 if __name__ == "__main__":

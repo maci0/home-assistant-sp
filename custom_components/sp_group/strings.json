@@ -35,7 +35,6 @@
     },
     "error": {
       "invalid_auth": "Invalid e-account email or password.",
-      "invalid_username": "Enter a non-empty email address of at most 254 UTF-8 bytes.",
       "cannot_connect": "Could not reach SP Group.",
       "requires_verification": "SP flagged this login as suspicious. Sign in once in the SP app, wait a few minutes, then try again.",
       "too_many_attempts": "Too many sign-in attempts. Wait a minute before trying again."
@@ -160,9 +159,6 @@
           "electricity_price": "Electricity price (SGD per kWh, incl. GST)"
         }
       }
-    },
-    "error": {
-      "invalid_price": "Enter a finite, non-negative price, or leave empty to disable."
     }
   }
 }

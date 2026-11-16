@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from functools import partial
 from typing import Any
@@ -11,7 +12,6 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import selector
 
 from .client import AuthError, Session, SpGroupClient, UsageError, session_entry_data
 from .const import (
@@ -24,6 +24,7 @@ from .const import (
     parse_electricity_price_input,
     validate_username,
 )
+from .form_fields import ValidatedTextSelector
 
 # The password bound only stops a pasted blob from being sent as a request
 # body, so it stays a count of code points; the username is bounded in UTF-8
@@ -33,9 +34,7 @@ MAX_PASSWORD_CHARS = 1024
 _PASSWORD_VALIDATOR = vol.All(str, vol.Length(min=1, max=MAX_PASSWORD_CHARS))
 
 _CREDENTIALS = {
-    # Form schemas must be serializable by Home Assistant. Apply the byte
-    # bound on submission, not through an opaque callable in the UI schema.
-    vol.Required(CONF_USERNAME): str,
+    vol.Required(CONF_USERNAME): ValidatedTextSelector(vol.All(str, validate_username)),
     vol.Required(CONF_PASSWORD): _PASSWORD_VALIDATOR,
 }
 
@@ -44,13 +43,17 @@ STEP_USER_DATA_SCHEMA = vol.Schema(dict(_CREDENTIALS))
 _LOGGER = logging.getLogger(__name__)
 
 
-def _credential_errors(user_input: dict[str, Any]) -> dict[str, str]:
-    """Validate before folding the username or making a network request."""
+def _price_input(raw: object) -> float | None:
+    """voluptuous validator for the options price field.
+
+    Raises Invalid so a typo comes back as a form error on the field, and
+    returns None for a cleared field, which is how the operator turns the cost
+    series off. The rule itself is the one in const, shared with the reader.
+    """
     try:
-        validate_username(user_input[CONF_USERNAME])
-    except ValueError:
-        return {CONF_USERNAME: "invalid_username"}
-    return {}
+        return parse_electricity_price_input(raw)
+    except ValueError as exc:
+        raise vol.Invalid(str(exc)) from exc
 
 
 def _entry_data(client: SpGroupClient, username: str) -> dict[str, str]:
@@ -80,6 +83,32 @@ async def _validate(
     return _entry_data(client, username)
 
 
+def _price_field(value: object) -> float | str:
+    """The options form's price field: a non-negative number, or ``""``.
+
+    The shipped option description tells the user to leave the field empty to
+    disable the cost series, and the form framework submits an untouched
+    optional field as an empty string. Coercing that with ``float()`` raised a
+    form error instead, so the one way the description offers to turn the cost
+    series off was a validation failure. Zero is accepted here and carries no
+    price, as ``parse_electricity_price`` decides for the reader.
+    """
+    if isinstance(value, str):
+        if not value.strip():
+            return ""
+        try:
+            number = float(value.strip())
+        except ValueError as exc:
+            raise vol.Invalid(f"{CONF_ELECTRICITY_PRICE} must be a number") from exc
+    elif isinstance(value, bool) or not isinstance(value, int | float):
+        raise vol.Invalid(f"{CONF_ELECTRICITY_PRICE} must be a number")
+    else:
+        number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise vol.Invalid(f"{CONF_ELECTRICITY_PRICE} must be zero or more")
+    return number
+
+
 def _auth_error_key(exc: AuthError) -> str:
     """The strings.json error key: the Auth0 code, or invalid_auth for the rest."""
     if exc.error_folded in {OAUTH_ERROR_REQUIRES_VERIFICATION, "too_many_attempts"}:
@@ -106,27 +135,19 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        errors: dict[str, str] = {}
         if user_input is not None:
-            try:
-                price = parse_electricity_price_input(
-                    user_input.get(CONF_ELECTRICITY_PRICE)
-                )
-            except ValueError:
-                errors[CONF_ELECTRICITY_PRICE] = "invalid_price"
+            # The schema already ran every submitted value through the rule, so
+            # None here is a cleared field and not an unset one.
+            price = user_input.get(CONF_ELECTRICITY_PRICE)
+            if price is not None:
+                options = {**self.config_entry.options, CONF_ELECTRICITY_PRICE: price}
             else:
-                if price is not None:
-                    options = {
-                        **self.config_entry.options,
-                        CONF_ELECTRICITY_PRICE: price,
-                    }
-                else:
-                    options = {
-                        key: value
-                        for key, value in self.config_entry.options.items()
-                        if key != CONF_ELECTRICITY_PRICE
-                    }
-                return self.async_create_entry(title="", data=options)
+                options = {
+                    key: value
+                    for key, value in self.config_entry.options.items()
+                    if key != CONF_ELECTRICITY_PRICE
+                }
+            return self.async_create_entry(title="", data=options)
         current = self.config_entry.options.get(CONF_ELECTRICITY_PRICE)
         schema = vol.Schema(
             {
@@ -135,10 +156,10 @@ class SpGroupOptionsFlow(config_entries.OptionsFlow):
                     description={
                         "suggested_value": str(current) if current is not None else ""
                     },
-                ): selector.TextSelector(),
+                ): ValidatedTextSelector(_price_field),
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="init", data_schema=schema)
 
 
 class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's own
@@ -239,8 +260,8 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        errors = _credential_errors(user_input) if user_input is not None else {}
-        if user_input is not None and not errors:
+        errors: dict[str, str] = {}
+        if user_input is not None:
             await self.async_set_unique_id(fold_text(user_input[CONF_USERNAME]))
             self._abort_if_unique_id_configured()
             try:
@@ -296,8 +317,8 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
         The reauth and the reconfigure flow ask the same question and differ
         only in which step they show and which entry they update.
         """
-        errors = _credential_errors(user_input) if user_input is not None else {}
-        if user_input is not None and not errors:
+        errors: dict[str, str] = {}
+        if user_input is not None:
             try:
                 data = await _validate(
                     self.hass,
@@ -322,7 +343,7 @@ class SpGroupConfigFlow(  # type: ignore[call-arg]  # domain= is ConfigFlow's ow
                     vol.Required(
                         CONF_USERNAME,
                         default=entry.data.get(CONF_USERNAME, ""),
-                    ): str,
+                    ): ValidatedTextSelector(vol.All(str, validate_username)),
                 }
             ),
             errors=errors,

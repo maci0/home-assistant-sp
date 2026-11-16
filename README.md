@@ -196,15 +196,6 @@ uv run python scripts/launch_client.py
 The first five are what CI runs. `scripts/launch_client.py` replays the
 recorded fixtures through the shipped client and needs no credentials.
 
-The form regressions in `tests/test_config_flow.py` also need a Home Assistant
-2026.11+ environment (including its `probatio` serializer). From the checkout,
-run `python -m unittest tests.test_config_flow -v` with that environment's Python.
-They skip in the lightweight client environment; a skipped run does not verify
-form rendering. The tests serialize the setup, reauth, reconfigure, MFA and
-options forms and mock login, so they need no credentials or SP network access.
-Keep UI schemas serializable: validate UTF-8 username limits and price values
-on submission, not with opaque functions in the displayed schema.
-
 `--locked` fails if `uv.lock` disagrees with `pyproject.toml`, so CI and a
 local checkout install the same versions. Use `uv sync --extra dev` only when
 intentionally changing dependencies, then commit the updated `uv.lock`.
